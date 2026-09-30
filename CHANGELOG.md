@@ -40,9 +40,13 @@ All notable changes to this project are documented here. The format follows
   the panel states explicitly.
 - Income is not converted between assets: on a multi-assets or credits account
   (Credits Trading Mode settles PnL in `BNFCR`) the records are added at face
-  value, which can differ from the venue's own valuation of them by a fraction of
-  a percent. Binance's own PnL page also counts unrealised moves and history the
-  income API will not serve, so the two are not the same quantity.
+  value and the coverage line names them. That is deliberate rather than an
+  oversight — the venue's own wallet total values a credit at about 0.884 USD
+  (measured against the other assets it holds), while the venue's own PnL
+  percentages divide the credit amount at par by a USDⓈ equity, so par is the
+  convention that agrees with the page it will be compared against. Binance's PnL
+  page also counts unrealised moves and history the income API will not serve, so
+  the two are not the same quantity.
 
 ## [0.1.1] - 2026-09-30
 
