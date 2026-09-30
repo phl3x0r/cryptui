@@ -27,6 +27,11 @@ const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 10;
 /// Width of the value axis, in cells.
 const AXIS_WIDTH: u16 = 12;
+/// How long a fetched history stays "fresh".
+///
+/// History is not a price feed: it is fetched on demand and the venue's records
+/// only change as the day does, so a fetch from an hour ago is still current.
+const FEED_TOLERANCE_MS: i64 = 3_600_000;
 
 /// Draw the panel, if it is open.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -69,7 +74,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 /// ` Performance · Main · 3 months `
 fn title(app: &App, window: Window) -> Line<'static> {
-    let fresh = app.performance().feed.summary(now_ms(), app.stale_after_ms);
+    let fresh = app.performance().feed.summary(now_ms(), FEED_TOLERANCE_MS);
     Line::from(vec![
         Span::styled(
             " Performance ",
@@ -262,7 +267,9 @@ fn render_metrics(frame: &mut Frame, area: Rect, app: &App, series: &EquitySerie
             metric("best day", signed(metrics.best_day), metrics.best_day),
             metric("worst day", signed(metrics.worst_day), metrics.worst_day),
             metric("days", format!("{}", metrics.window_days()), 0.0),
-            metric("points", format!("{}", metrics.samples), 0.0),
+            // "returns", not "points": the coverage line counts observations,
+            // and there is one fewer return than there are days.
+            metric("returns", format!("{}", metrics.samples), 0.0),
         ])),
     ];
 
@@ -524,9 +531,28 @@ mod tests {
             "win rate",
             "best day",
             "worst day",
+            "returns",
         ] {
             assert!(text.contains(expected), "`{expected}` missing from: {text}");
         }
+    }
+
+    #[test]
+    fn old_history_is_not_reported_as_stale() {
+        // History is fetched on demand, not streamed: a fetch from minutes ago
+        // is still current, and the panel must not cry wolf about it.
+        let app = panel_app(60);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let text = overlay_text(&app, 140, 44);
+
+        assert!(
+            !text.contains("stale"),
+            "a recent fetch is not stale: {text}"
+        );
+        assert!(
+            text.contains("live"),
+            "the title still reports the age: {text}"
+        );
     }
 
     #[test]
