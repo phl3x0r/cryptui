@@ -147,7 +147,15 @@ rather than quits.
 
 ## Troubleshooting
 
-**The chart is live but the feed says `stale`.** Check `-v` output. Positions and
+**Where do the logs go?** The interactive UI writes to
+`$XDG_STATE_HOME/cryptui/cryptui.log` (`~/.local/state/cryptui/cryptui.log` by
+default, or `$CRYPTUI_LOG` if set); `-v` / `-vv` raise the level. It cannot log
+to the terminal — a line written to stderr lands on top of the rendered frame and
+stays there, because ratatui only repaints cells whose contents change. The
+headless commands (`--print …`, `--dump-frame`, `--print-config`) log to stderr
+as usual, since nothing is drawing there.
+
+**The chart is live but the feed says `stale`.** Check the log file. Positions and
 balances are polled every `settings.refresh_interval_ms`; the chart tolerates
 silence up to twice its candle interval, because a quiet contract legitimately
 goes minutes without a candle update.

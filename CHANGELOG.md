@@ -22,6 +22,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Diagnostics no longer corrupt the UI. The interactive UI emitted `tracing`
+  warnings to stderr while ratatui owned the screen, so a warning such as the
+  silent-stream notice was painted over the header and stayed there, because
+  ratatui only repaints cells that change. The UI now logs to
+  `$XDG_STATE_HOME/cryptui/cryptui.log` (`$CRYPTUI_LOG` overrides it), and the
+  headless commands keep logging to stderr.
 - Chart overlays no longer recolour the candles they cross. A Braille cell holds
   one colour, and the moving averages and entry line were drawn after the
   candles, so wherever a line crossed a bar the bar took the line's colour —

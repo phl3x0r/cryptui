@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use tracing_subscriber::EnvFilter;
 
 use cryptui::accounts::{self, AccountHandle};
 use cryptui::app::{self, RunOptions};
 use cryptui::config::{self, Config};
+use cryptui::logging::{self, Sink};
 use cryptui::state::{App, Update};
 use cryptui::ui::{self, format};
 use cryptui::venue::{Interval, Venue};
@@ -86,7 +86,17 @@ enum PrintKind {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
+
+    // The interactive UI owns the screen, so its diagnostics go to a file:
+    // a log line written to stderr lands on top of the frame and stays there,
+    // because ratatui only repaints cells that change.
+    let interactive = cli.print.is_none() && !cli.print_config && !cli.dump_frame;
+    let sink = if interactive {
+        Sink::File
+    } else {
+        Sink::Stderr
+    };
+    let log_file = logging::init(cli.verbose, sink);
 
     let path = match config::discover(cli.config.as_deref()) {
         Ok(path) => path,
@@ -157,7 +167,12 @@ async fn main() -> ExitCode {
         chart_history: config.settings().chart_history_candles(),
     };
 
-    tracing::debug!(config = %path.display(), accounts = options.accounts.len(), "starting the TUI");
+    tracing::debug!(
+        config = %path.display(),
+        accounts = options.accounts.len(),
+        log = ?log_file,
+        "starting the TUI"
+    );
     match app::run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error),
@@ -425,24 +440,6 @@ fn format_time(milliseconds: i64) -> String {
 fn fail(error: impl std::fmt::Display) -> ExitCode {
     eprintln!("cryptui: {error}");
     ExitCode::FAILURE
-}
-
-/// Send diagnostics to stderr.
-///
-/// The TUI owns the screen while it runs, so the default level is quiet; `-v`
-/// and `$RUST_LOG` are for troubleshooting.
-fn init_tracing(verbosity: u8) {
-    let default = match verbosity {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
 }
 
 #[cfg(test)]

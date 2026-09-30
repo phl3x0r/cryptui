@@ -12,6 +12,7 @@ pub mod app;
 pub mod auth;
 pub mod chart;
 pub mod config;
+pub mod logging;
 pub mod state;
 pub mod ui;
 pub mod venue;
