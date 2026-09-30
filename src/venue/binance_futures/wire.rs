@@ -76,6 +76,10 @@ struct IncomeRow {
     time: i64,
     income_type: String,
     income: Num,
+    /// The asset the venue credited, for example `BNFCR` or `USDC`. Absent on
+    /// records the venue predates, which are treated as unknown.
+    #[serde(default)]
+    asset: String,
 }
 
 /// Balance changes, oldest first.
@@ -89,6 +93,7 @@ pub(crate) fn income(payload: Value) -> Result<Vec<IncomeRecord>, String> {
             time_ms: row.time,
             income_type: row.income_type,
             amount: row.income.f64()?,
+            asset: row.asset,
         });
     }
     records.sort_by_key(|record| record.time_ms);

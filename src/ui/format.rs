@@ -35,6 +35,11 @@ pub fn percent(value: f64) -> String {
     format!("{}%", signed_grouped(&format!("{value:.1}"), value))
 }
 
+/// Format a signed percentage at a chosen precision, for axis ticks.
+pub fn percent_decimals(value: f64, decimals: usize) -> String {
+    format!("{}%", signed_grouped(&format!("{value:.decimals$}"), value))
+}
+
 /// Format a percentage that is not a gain or loss, so it carries no sign.
 ///
 /// Used for ratios such as the margin ratio, where `+2.4%` would read as profit.
@@ -136,7 +141,8 @@ fn group(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        date, day, money, percent, percent_plain, price, quantity, signed_money, timestamp,
+        date, day, money, percent, percent_decimals, percent_plain, price, quantity, signed_money,
+        timestamp,
     };
 
     #[test]
@@ -170,6 +176,14 @@ mod tests {
     fn plain_percentages_carry_no_sign() {
         assert_eq!(percent_plain(2.414_2), "2.4%");
         assert_eq!(percent_plain(0.0), "0.0%");
+    }
+
+    #[test]
+    fn percentages_carry_the_precision_the_axis_asks_for() {
+        assert_eq!(percent_decimals(0.02, 1), "+0.0%");
+        assert_eq!(percent_decimals(0.02, 2), "+0.02%");
+        assert_eq!(percent_decimals(-0.25, 3), "-0.250%");
+        assert_eq!(percent_decimals(0.0, 2), "+0.00%");
     }
 
     #[test]

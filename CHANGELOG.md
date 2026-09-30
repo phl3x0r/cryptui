@@ -17,6 +17,19 @@ All notable changes to this project are documented here. The format follows
   raw wallet balance.
 - `--print performance [--window 1m|3m|1y|all]` for the same figures without a
   terminal.
+- The panel names the assets the income arrived in when they are not a dollar
+  stablecoin, so a credits or multi-assets account is not read as a plain USDⓈ
+  one.
+
+### Fixed
+
+- The performance curve fetched the *oldest* income records in the window rather
+  than the newest. A request carrying a `startTime` is answered oldest-first, so
+  an account with more than a page of records never had its recent days fetched,
+  and walking back from today's balance credited that profit to the first day
+  instead: a live account read `-0.3%` where the venue's own records say `+2.0%`.
+  Each page is now bounded from above and the walk goes backwards, which keeps the
+  recent end of the curve exact.
 
 ### Notes
 
@@ -25,6 +38,11 @@ All notable changes to this project are documented here. The format follows
   recorded locally on each run. Binance serves only a few months of income and
   no equity history, so long windows show the coverage actually available, which
   the panel states explicitly.
+- Income is not converted between assets: on a multi-assets or credits account
+  (Credits Trading Mode settles PnL in `BNFCR`) the records are added at face
+  value, which can differ from the venue's own valuation of them by a fraction of
+  a percent. Binance's own PnL page also counts unrealised moves and history the
+  income API will not serve, so the two are not the same quantity.
 
 ## [0.1.1] - 2026-09-30
 

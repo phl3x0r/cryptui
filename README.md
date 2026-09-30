@@ -143,6 +143,17 @@ oldest one the venue will serve, and today's balance is recorded locally on each
 run, so the longer windows fill in as the account ages. The panel states the
 coverage it actually has instead of stretching a short series.
 
+**Why does the panel disagree with Binance's own PnL page?** Three things, in
+order of size. The venue serves income only for a recent window, so a long view
+covers less than the venue's page does. Binance's page also counts unrealised
+moves on open positions, which no income record contains. And on a multi-assets
+or credits account the PnL settles in an asset that is not the wallet's own: the
+`BNFCR` credits of Credits Trading Mode, or BNB commission rebates. The curve
+adds those records to the wallet balance at face value rather than converting
+them, so it can differ from the venue's own valuation of the same credits by a
+fraction of a percent. The coverage line names any income asset that is not a
+dollar stablecoin, and the log records them for every fetch (`-v`).
+
 **Where do the logs go?** The interactive UI writes to
 `$XDG_STATE_HOME/cryptui/cryptui.log` (`~/.local/state/cryptui/cryptui.log` by
 default, or `$CRYPTUI_LOG` if set); `-v` / `-vv` raise the level. It cannot log

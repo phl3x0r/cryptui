@@ -469,6 +469,10 @@ fn print_performance_report(label: &str, window: Window, series: &EquitySeries) 
         describe_duration(to - from)
     );
 
+    if !series.assets().is_empty() {
+        println!("  income in      {}", series.assets().join(", "));
+    }
+
     let Some(metrics) = series.metrics() else {
         println!("  not enough history to measure");
         return;

@@ -26,6 +26,47 @@ pub(crate) struct IncomeRecord {
     pub(crate) income_type: String,
     /// Signed amount: positive credits the balance, negative debits it.
     pub(crate) amount: f64,
+    /// The asset the venue denominated it in, for example `BNFCR` or `BNB`.
+    ///
+    /// Income is not always in the account's margin asset: a multi-assets or
+    /// credits account settles trading PnL in one asset and commission rebates in
+    /// another, so the unit is part of the record rather than an assumption.
+    pub(crate) asset: String,
+}
+
+/// Drop the oldest day when a page limit, not the venue, ended the walk.
+///
+/// The records are complete back to the oldest one fetched, so the day *before*
+/// it is a knowable starting balance. That only holds if the oldest day itself
+/// is complete: when the fetch stopped at the page budget the earliest records of
+/// that day were never seen, and using its closing balance as a starting point
+/// would report them as a gain. The curve then starts a day later instead.
+pub(crate) fn drop_incomplete_oldest_day(
+    records: Vec<IncomeRecord>,
+    truncated: bool,
+) -> Vec<IncomeRecord> {
+    if !truncated {
+        return records;
+    }
+    let Some(oldest) = records.iter().map(|record| record.time_ms).min() else {
+        return records;
+    };
+    let oldest_day = oldest.div_euclid(DAY_MS);
+    records
+        .into_iter()
+        .filter(|record| record.time_ms.div_euclid(DAY_MS) > oldest_day)
+        .collect()
+}
+
+/// The distinct assets the records are denominated in, for the log.
+pub(crate) fn assets(records: &[IncomeRecord]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for record in records {
+        if !record.asset.is_empty() {
+            seen.insert(record.asset.as_str());
+        }
+    }
+    seen.into_iter().map(str::to_owned).collect()
 }
 
 /// Reconstruct daily wallet balances from income records.
@@ -93,6 +134,7 @@ mod tests {
             time_ms: day * DAY_MS + 3_600_000,
             income_type: kind.to_owned(),
             amount,
+            asset: "USDC".to_owned(),
         }
     }
 
@@ -183,6 +225,37 @@ mod tests {
             vec![1_000.0, 1_050.0, 1_050.0, 1_050.0, 1_050.0, 1_045.0],
             "the anchor day, then every day up to now"
         );
+    }
+
+    #[test]
+    fn a_truncated_fetch_drops_the_day_it_cannot_complete() {
+        use super::drop_incomplete_oldest_day;
+
+        let records = vec![
+            income(1, "REALIZED_PNL", 10.0),
+            income(2, "REALIZED_PNL", 20.0),
+        ];
+        let kept = drop_incomplete_oldest_day(records.clone(), true);
+        assert_eq!(kept.len(), 1, "the day with unseen earlier records goes");
+        assert_eq!(kept[0].time_ms, records[1].time_ms);
+
+        let complete = drop_incomplete_oldest_day(records.clone(), false);
+        assert_eq!(complete.len(), 2, "an untruncated fetch keeps every day");
+        assert!(drop_incomplete_oldest_day(Vec::new(), true).is_empty());
+    }
+
+    #[test]
+    fn the_assets_behind_a_curve_are_named_once_each() {
+        use super::assets;
+
+        let mut bnb = income(1, "COMMISSION", -0.0001);
+        bnb.asset = "BNB".to_owned();
+        let mut credits = income(1, "REALIZED_PNL", 5.0);
+        credits.asset = "BNFCR".to_owned();
+        let mut unnamed = income(2, "REALIZED_PNL", 1.0);
+        unnamed.asset = String::new();
+
+        assert_eq!(assets(&[bnb, credits, unnamed]), vec!["BNB", "BNFCR"]);
     }
 
     #[test]

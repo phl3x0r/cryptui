@@ -130,10 +130,28 @@ impl Curve {
     }
 
     /// Label for an axis value: a percentage for the index, money for balances.
-    fn label(&self, value: f64) -> String {
+    ///
+    /// `decimals` widens the percentage when a window barely moves, so the ticks
+    /// of a small account stay apart; money carries its own precision.
+    fn label(&self, value: f64, decimals: usize) -> String {
         match self.mode {
-            CurveMode::Performance => format::percent(value - 100.0),
+            CurveMode::Performance => format::percent_decimals(value - 100.0, decimals),
             CurveMode::Balance => format::money(value),
+        }
+    }
+
+    /// Decimals the value axis needs to keep its own ticks distinguishable.
+    fn axis_decimals(&self, low: f64, high: f64) -> usize {
+        if self.mode == CurveMode::Balance {
+            return 2;
+        }
+        let range = (high - low).abs();
+        if range >= 1.0 {
+            1
+        } else if range >= 0.1 {
+            2
+        } else {
+            3
         }
     }
 
@@ -277,12 +295,18 @@ fn value_axis(curve: &Curve, low: f64, high: f64, height: u16) -> Vec<Line<'stat
     }
 
     let plain = Style::default().fg(theme::LABEL);
-    let label = |value: f64, style: Style| Line::from(Span::styled(curve.label(value), style));
+    let decimals = curve.axis_decimals(low, high);
+    let label =
+        |value: f64, style: Style| Line::from(Span::styled(curve.label(value, decimals), style));
 
-    lines[0] = label(high, plain);
+    // The ticks the axis always carries: top, middle, bottom.
+    let mut ticks = vec![(0usize, high)];
     if height >= 3 {
-        lines[height / 2] = label((low + high) / 2.0, plain);
-        lines[height - 1] = label(low, plain);
+        ticks.push((height / 2, (low + high) / 2.0));
+        ticks.push((height - 1, low));
+    }
+    for (row, value) in &ticks {
+        lines[*row] = label(*value, plain);
     }
 
     if let Some(reference) = curve.reference
@@ -291,7 +315,14 @@ fn value_axis(curve: &Curve, low: f64, high: f64, height: u16) -> Vec<Line<'stat
         && height >= 4
     {
         let row = ((high - reference) / (high - low) * (height - 1) as f64).round() as usize;
-        if row != 0 && row != height - 1 {
+        // A window that opens flat could round the reference to the same string
+        // as a tick; the line is on the chart either way, so the label would be
+        // noise rather than information.
+        let text = curve.label(reference, decimals);
+        let repeated = ticks
+            .iter()
+            .any(|(tick_row, value)| *tick_row != row && curve.label(*value, decimals) == text);
+        if row != 0 && row != height - 1 && !repeated {
             lines[row] = label(
                 reference,
                 Style::default()
@@ -472,10 +503,11 @@ fn render_coverage(frame: &mut Frame, area: Rect, series: &EquitySeries, mode: C
         CurveMode::Performance => " · net of deposits",
         CurveMode::Balance => "",
     };
+    let units = income_note(series.assets());
 
     let text = match series.span() {
         Some((from, to)) => format!(
-            "coverage {} → {} · {} · {} points{flows}{mode_note}",
+            "coverage {} → {} · {} · {} points{flows}{units}{mode_note}",
             format::date(from),
             format::date(to),
             describe_duration(to - from),
@@ -497,6 +529,38 @@ fn render_coverage(frame: &mut Frame, area: Rect, series: &EquitySeries, mode: C
         .collect();
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Names the assets the income arrived in, when they are worth naming.
+///
+/// Currencies are not converted, so an account whose profits settle in credits,
+/// or whose rebates arrive in BNB, is worth telling apart from one that simply
+/// trades USDⓈ. A single stablecoin is the ordinary case and says nothing.
+fn income_note(assets: &[String]) -> String {
+    let dollar = |asset: &str| {
+        matches!(
+            asset,
+            "USDT"
+                | "USDC"
+                | "FDUSD"
+                | "USD1"
+                | "BUSD"
+                | "DAI"
+                | "TUSD"
+                | "BFUSD"
+                | "RWUSD"
+                | "LDUSDT"
+        )
+    };
+    let unusual: Vec<&str> = assets
+        .iter()
+        .map(String::as_str)
+        .filter(|asset| !dollar(asset))
+        .collect();
+    if unusual.is_empty() {
+        return String::new();
+    }
+    format!(" · income in {}", unusual.join(", "))
 }
 
 /// The window selector and the keys, with the active window marked.
@@ -723,6 +787,62 @@ mod tests {
             .count();
 
         assert!(curve > 50, "expected a drawn curve, found {curve} cells");
+    }
+
+    #[test]
+    fn a_narrow_range_is_labelled_with_enough_precision() {
+        // A small account moves in fractions of a percent: at one decimal the
+        // ticks collapse into the same string.
+        let now = crate::auth::now_ms();
+        let points = [4_000.0, 4_010.0, 3_990.0]
+            .iter()
+            .enumerate()
+            .map(|(index, wallet)| EquityPoint {
+                time_ms: now - (2 - index as i64) * DAY_MS,
+                wallet: *wallet,
+                external_flow: 0.0,
+            })
+            .collect();
+        let mut app = sample_app();
+        app.toggle_performance();
+        app.apply(Update::Equity(EquitySeries::new(points)));
+
+        let text = panel(&app);
+        let ticks: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.strip_suffix('\u{2502}'))
+            .map(str::trim)
+            .filter(|cell| cell.ends_with('%'))
+            .collect();
+
+        assert!(ticks.len() >= 3, "the axis is labelled: {text}");
+        assert!(
+            ticks.iter().all(|tick| tick.len() > "+0.0%".len()),
+            "a fraction of a percent needs two decimals: {ticks:?}"
+        );
+        assert_eq!(
+            text.matches("+0.00%").count(),
+            1,
+            "the reference is labelled once, not twice: {text}"
+        );
+    }
+
+    #[test]
+    fn the_coverage_names_income_that_is_not_the_usual_currency() {
+        use super::income_note;
+
+        assert_eq!(income_note(&[]), "");
+        assert_eq!(income_note(&["USDT".to_owned()]), "", "the ordinary case");
+        assert_eq!(
+            income_note(&["USDC".to_owned(), "USDT".to_owned()]),
+            "",
+            "dollar units are the ordinary case, however many"
+        );
+        assert_eq!(
+            income_note(&["BNFCR".to_owned(), "BNB".to_owned(), "USDC".to_owned()]),
+            " · income in BNFCR, BNB",
+            "credits and rebates are worth naming, dollars are not"
+        );
     }
 
     #[test]

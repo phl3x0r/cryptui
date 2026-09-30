@@ -135,6 +135,12 @@ impl EquityPoint {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EquitySeries {
     points: Vec<EquityPoint>,
+    /// The assets the venue denominated the income in.
+    ///
+    /// Not always the account's margin asset: a multi-assets or credits account
+    /// settles trading PnL in one asset and commission rebates in another. The
+    /// curve does not convert between them, so it says which ones it used.
+    assets: Vec<String>,
 }
 
 impl EquitySeries {
@@ -146,6 +152,17 @@ impl EquitySeries {
         let mut series = Self::default();
         series.extend(points);
         series
+    }
+
+    /// Name the assets the income behind this series was denominated in.
+    pub fn with_assets(mut self, assets: Vec<String>) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    /// Those assets, empty when the source did not say.
+    pub fn assets(&self) -> &[String] {
+        &self.assets
     }
 
     /// Fold in more observations.
@@ -182,6 +199,11 @@ impl EquitySeries {
             {
                 Some(existing) => *existing = point,
                 None => self.points.push(point),
+            }
+        }
+        for asset in other.assets {
+            if !self.assets.contains(&asset) {
+                self.assets.push(asset);
             }
         }
         self.points.sort_by_key(|point| point.time_ms);
@@ -221,6 +243,7 @@ impl EquitySeries {
                 .copied()
                 .filter(|point| point.time_ms >= start)
                 .collect(),
+            assets: self.assets.clone(),
         }
     }
 
@@ -629,6 +652,18 @@ mod tests {
         assert_eq!(Window::Month.label(), "1M");
         assert_eq!(Window::All.start_ms(now), None, "everything has no start");
         assert_eq!(Window::Month.start_ms(now), Some(now - 30 * DAY_MS));
+    }
+
+    #[test]
+    fn the_series_carries_the_assets_its_income_came_in() {
+        let series = EquitySeries::new(vec![point(0, 100.0), point(1, 110.0)])
+            .with_assets(vec!["BNFCR".to_owned()])
+            .window(Window::All, 10 * DAY_MS);
+        assert_eq!(series.assets(), ["BNFCR"], "a window keeps the note");
+
+        let mut recorded = EquitySeries::new(vec![point(0, 100.0)]);
+        recorded.merge_preferring(series);
+        assert_eq!(recorded.assets(), ["BNFCR"], "and a merge does not lose it");
     }
 
     #[test]
