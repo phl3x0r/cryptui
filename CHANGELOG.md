@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-09-30
+
 ### Added
 
 - The price axis marks the entry price of the position being charted, next to
@@ -79,5 +83,6 @@ The first release: read-only monitoring of Binance USDⓈ-M futures accounts.
   on. All futures REST endpoints and the spot stream work, so the application
   polls instead. See the troubleshooting section of the README.
 
-[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.0
