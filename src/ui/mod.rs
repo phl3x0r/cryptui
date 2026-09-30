@@ -100,7 +100,9 @@ pub(crate) mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::state::App;
-    use crate::venue::{AccountSnapshot, Balance, Interval, Position, PositionSide, VenueId};
+    use crate::venue::{
+        AccountSnapshot, Balance, Interval, Kline, Position, PositionSide, VenueId,
+    };
 
     use super::render;
 
@@ -137,6 +139,38 @@ pub(crate) mod tests {
             notional: 12_500.0,
             liquidation_price: Some(80_000.0),
         }
+    }
+
+    /// Deterministic candles for chart snapshots: a slow wave plus a drift,
+    /// starting at 2026-09-30 00:00 UTC with 15-minute steps.
+    pub(crate) fn sample_candles() -> Vec<Kline> {
+        const START_MS: i64 = 1_790_726_400_000;
+        const STEP_MS: i64 = 900_000;
+        const COUNT: i64 = 120;
+
+        let close_at =
+            |index: i64| 85_000.0 + (index as f64 * 0.35).sin() * 700.0 + index as f64 * 12.0;
+
+        (0..COUNT)
+            .map(|index| {
+                let close = close_at(index);
+                let open = if index == 0 {
+                    close - 40.0
+                } else {
+                    close_at(index - 1)
+                };
+                Kline {
+                    open_time_ms: START_MS + index * STEP_MS,
+                    open,
+                    high: open.max(close) + 120.0,
+                    low: open.min(close) - 120.0,
+                    close,
+                    volume: 500.0 + (index % 7) as f64 * 90.0,
+                    close_time_ms: START_MS + (index + 1) * STEP_MS - 1,
+                    closed: index + 1 < COUNT,
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn sample_account() -> AccountSnapshot {

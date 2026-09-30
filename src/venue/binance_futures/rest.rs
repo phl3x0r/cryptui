@@ -6,8 +6,10 @@ use crate::auth::{Query, now_ms};
 
 use super::BinanceFutures;
 use super::wire;
+use super::ws;
 use crate::venue::{
-    AccountSnapshot, Interval, Kline, Position, Symbol, Venue, VenueFuture, VenueId,
+    AccountSnapshot, Interval, Kline, Position, StreamEvent, Symbol, UnboundedSender, Venue,
+    VenueFuture, VenueId,
 };
 
 /// Highest candle count the venue will return in one klines request.
@@ -58,6 +60,34 @@ impl Venue for BinanceFutures {
                 .get_json("/fapi/v1/klines", Some(&query), false)
                 .await?;
             wire::klines(&payload, now_ms()).map_err(|detail| self.malformed(detail))
+        })
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn follow_klines(
+        &self,
+        symbol: &str,
+        interval: Interval,
+        updates: UnboundedSender<StreamEvent<Kline>>,
+    ) -> VenueFuture<'_, ()> {
+        let symbol = symbol.to_uppercase();
+        Box::pin(async move {
+            ws::follow_klines(self.stream_base, &symbol, interval, updates).await;
+            Ok(())
+        })
+    }
+
+    fn follow_marks(
+        &self,
+        symbols: Vec<String>,
+        updates: UnboundedSender<StreamEvent<(String, f64)>>,
+    ) -> VenueFuture<'_, ()> {
+        Box::pin(async move {
+            ws::follow_marks(self.stream_base, &symbols, updates).await;
+            Ok(())
         })
     }
 }

@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod auth;
+pub mod chart;
 pub mod config;
 pub mod state;
 pub mod ui;

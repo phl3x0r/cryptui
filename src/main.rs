@@ -142,6 +142,7 @@ async fn main() -> ExitCode {
         venue: connected.venue.id(),
         interval: effective_interval(&cli, &config),
         refresh_interval_ms: config.settings().refresh_interval_ms(),
+        chart_history: config.settings().chart_history_candles(),
     };
 
     match app::run(connected.venue, options) {
@@ -245,6 +246,25 @@ async fn dump_frame(cli: &Cli, config: &Config, connected: Connected) -> ExitCod
     // feed health exactly as it will during a live session.
     state.apply(Update::Positions(positions));
     state.apply(Update::Account(Box::new(account)));
+
+    // Load the chart target so the dump shows a real chart rather than a
+    // placeholder pane.
+    if let Some(symbol) = state.effective_symbol().map(str::to_owned) {
+        state.focus_chart(symbol.clone());
+        let interval = state.chart_interval();
+        match connected
+            .venue
+            .klines(&symbol, interval, config.settings().chart_history_candles())
+            .await
+        {
+            Ok(candles) => state.apply(Update::History {
+                symbol,
+                interval,
+                candles,
+            }),
+            Err(error) => return fail(error),
+        }
+    }
 
     match ui::dump_frame(&state, cli.width, cli.height) {
         Ok(()) => ExitCode::SUCCESS,

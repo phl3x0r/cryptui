@@ -15,6 +15,8 @@ pub(crate) const NEGATIVE: Color = Color::Red;
 pub(crate) const WARNING: Color = Color::Yellow;
 /// Failure.
 pub(crate) const ERROR: Color = Color::Red;
+/// The reference line marking the newest close on the chart.
+pub(crate) const LAST_PRICE: Color = Color::DarkGray;
 
 /// Style for a profit or loss value: green when positive, red when negative,
 /// neutral at exactly zero.

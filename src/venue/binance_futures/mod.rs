@@ -8,6 +8,7 @@
 
 mod rest;
 mod wire;
+mod ws;
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -23,6 +24,10 @@ use super::{VenueError, VenueId};
 const MAINNET_BASE: &str = "https://fapi.binance.com";
 /// Testnet REST base URL.
 const TESTNET_BASE: &str = "https://testnet.binancefuture.com";
+/// Mainnet market-stream base URL.
+const MAINNET_STREAM: &str = "wss://fstream.binance.com";
+/// Testnet market-stream base URL.
+const TESTNET_STREAM: &str = "wss://stream.binancefuture.com";
 /// How the client identifies itself to the venue.
 const USER_AGENT: &str = concat!("cryptui/", env!("CARGO_PKG_VERSION"));
 /// Per-request timeout.
@@ -33,6 +38,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct BinanceFutures {
     http: Client,
     base: &'static str,
+    stream_base: &'static str,
     api_key: Secret,
     signer: Signer,
     /// Venue clock minus local clock, in milliseconds.
@@ -57,6 +63,11 @@ impl BinanceFutures {
         Ok(Self {
             http,
             base: if testnet { TESTNET_BASE } else { MAINNET_BASE },
+            stream_base: if testnet {
+                TESTNET_STREAM
+            } else {
+                MAINNET_STREAM
+            },
             api_key,
             signer: Signer::new(api_secret, DEFAULT_RECV_WINDOW_MS),
             clock_offset_ms: AtomicI64::new(0),
@@ -66,6 +77,11 @@ impl BinanceFutures {
     /// Base URL in use, for diagnostics. Contains no secret material.
     pub fn base_url(&self) -> &'static str {
         self.base
+    }
+
+    /// Market-stream base URL in use.
+    pub fn stream_base_url(&self) -> &'static str {
+        self.stream_base
     }
 
     /// Learn the venue's clock so signed requests survive local clock drift.

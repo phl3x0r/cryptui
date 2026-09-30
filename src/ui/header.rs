@@ -99,7 +99,7 @@ fn feed_color(status: &FeedStatus, app: &App, now: i64) -> ratatui::style::Color
 fn market_line(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
 
-    match app.chart_symbol() {
+    match app.effective_symbol() {
         Some(symbol) => spans.push(Span::styled(
             format!("{symbol}  "),
             Style::default()
@@ -112,7 +112,7 @@ fn market_line(app: &App) -> Line<'static> {
         )),
     }
     spans.push(Span::styled(
-        format!("{}  ", app.interval),
+        format!("{}  ", app.chart.interval),
         Style::default().fg(theme::LABEL),
     ));
 

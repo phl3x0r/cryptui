@@ -42,6 +42,15 @@ pub fn percent_plain(value: f64) -> String {
     format!("{}%", group(&format!("{value:.1}")))
 }
 
+/// Format a millisecond timestamp as UTC `MM-DD HH:MM`.
+pub fn timestamp(milliseconds: i64) -> String {
+    let format = time::macros::format_description!("[month]-[day] [hour]:[minute]");
+    time::OffsetDateTime::from_unix_timestamp(milliseconds / 1_000)
+        .ok()
+        .and_then(|stamp| stamp.format(&format).ok())
+        .unwrap_or_else(|| "—".to_owned())
+}
+
 /// Decimals to show for a price of this magnitude.
 fn price_decimals(value: f64) -> usize {
     let magnitude = value.abs();
@@ -109,7 +118,7 @@ fn group(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{money, percent, percent_plain, price, quantity, signed_money};
+    use super::{money, percent, percent_plain, price, quantity, signed_money, timestamp};
 
     #[test]
     fn large_prices_keep_two_decimals_and_separators() {
@@ -142,6 +151,18 @@ mod tests {
     fn plain_percentages_carry_no_sign() {
         assert_eq!(percent_plain(2.414_2), "2.4%");
         assert_eq!(percent_plain(0.0), "0.0%");
+    }
+
+    #[test]
+    fn timestamps_are_utc_and_stable() {
+        // Verified against the live API: 1_790_773_200_000 ms is 12:30 UTC.
+        assert_eq!(timestamp(1_790_773_200_000), "09-30 13:00");
+        assert_eq!(timestamp(1_790_726_400_000), "09-30 00:00");
+        assert_eq!(
+            timestamp(i64::MIN),
+            "—",
+            "an impossible stamp degrades quietly"
+        );
     }
 
     #[test]

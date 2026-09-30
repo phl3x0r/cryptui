@@ -79,6 +79,21 @@ impl Interval {
             Some(index) => Self::ALL[index - 1],
         }
     }
+
+    /// Length of the interval in milliseconds.
+    ///
+    /// Used to judge whether a chart that has not updated is merely quiet or
+    /// actually stale.
+    pub fn duration_ms(self) -> i64 {
+        match self {
+            Self::M1 => 60_000,
+            Self::M5 => 300_000,
+            Self::M15 => 900_000,
+            Self::H1 => 3_600_000,
+            Self::H4 => 14_400_000,
+            Self::D1 => 86_400_000,
+        }
+    }
 }
 
 impl fmt::Display for Interval {
@@ -243,6 +258,18 @@ pub struct AccountSnapshot {
 /// A boxed future, so [`Venue`] stays object-safe while other venues are added.
 pub type VenueFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, VenueError>> + Send + 'a>>;
 
+/// Channel a venue pushes live updates into.
+pub use tokio::sync::mpsc::UnboundedSender;
+
+/// Something that happened on a live market stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEvent<T> {
+    /// New data arrived.
+    Data(T),
+    /// The stream dropped; a reconnect is already being attempted.
+    Disconnected(String),
+}
+
 /// Everything that can go wrong while talking to a venue.
 #[derive(Debug, thiserror::Error)]
 pub enum VenueError {
@@ -320,6 +347,40 @@ pub trait Venue: Send + Sync {
 
     /// The most recent `limit` candles for `symbol`, oldest first.
     fn klines(&self, symbol: &str, interval: Interval, limit: u32) -> VenueFuture<'_, Vec<Kline>>;
+
+    /// Whether this venue pushes updates instead of only answering requests.
+    ///
+    /// When `false`, the application polls [`Venue::klines`] for the forming
+    /// candle and refreshes positions on an interval.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Follow candles for `symbol`, sending every update until the receiver is
+    /// dropped.
+    ///
+    /// Implementations reconnect internally; the future completing means the
+    /// caller no longer wants updates.
+    fn follow_klines(
+        &self,
+        symbol: &str,
+        interval: Interval,
+        updates: UnboundedSender<StreamEvent<Kline>>,
+    ) -> VenueFuture<'_, ()> {
+        let _ = (symbol, interval, updates);
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Follow mark prices for `symbols`, sending `(symbol, price)` updates until
+    /// the receiver is dropped.
+    fn follow_marks(
+        &self,
+        symbols: Vec<String>,
+        updates: UnboundedSender<StreamEvent<(String, f64)>>,
+    ) -> VenueFuture<'_, ()> {
+        let _ = (symbols, updates);
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +392,22 @@ mod tests {
         for interval in Interval::ALL {
             assert_eq!(interval.as_str().parse::<Interval>(), Ok(interval));
         }
+    }
+
+    #[test]
+    fn interval_durations_match_the_wire_forms() {
+        let durations: Vec<i64> = Interval::ALL
+            .iter()
+            .map(|interval| interval.duration_ms())
+            .collect();
+        assert_eq!(
+            durations,
+            vec![60_000, 300_000, 900_000, 3_600_000, 14_400_000, 86_400_000]
+        );
+        assert!(
+            durations.windows(2).all(|pair| pair[0] < pair[1]),
+            "intervals are ordered shortest to longest"
+        );
     }
 
     #[test]
