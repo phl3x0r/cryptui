@@ -1,0 +1,48 @@
+# CryptUI configuration template
+#
+# Copy this to ~/.config/cryptui/config.toml and fill in your credentials:
+#
+#   mkdir -p ~/.config/cryptui
+#   cp config.template.toml ~/.config/cryptui/config.toml
+#   chmod 600 ~/.config/cryptui/config.toml
+#
+# Resolution order used by the app:
+#   1. --config <path>
+#   2. $CRYPTUI_CONFIG
+#   3. ~/.config/cryptui/config.toml
+#
+# Secrets: values may be literal strings or ${ENV_VAR} references, which are
+# interpolated from the environment at load time. Never commit a config that
+# contains literal keys.
+
+# Account selected at startup (must match a key under [accounts.*]).
+default_account = "main"
+
+[settings]
+# How often signed REST data (positions + balances) is refreshed, in milliseconds.
+refresh_interval_ms = 3000
+# Candle interval the chart opens with: 1m | 5m | 15m | 1h | 4h | 1d
+default_interval = "15m"
+# How many historical candles to fetch when the chart's symbol/interval changes.
+chart_history_candles = 500
+
+# ---------------------------------------------------------------------------
+# A live account. Read-only API keys are sufficient for v0.1: enable
+# "Reading" only, and under Futures enable read access. No trade scope needed.
+# ---------------------------------------------------------------------------
+[accounts.main]
+venue = "binance_futures"
+label = "Main"
+api_key = "${BINANCE_API_KEY}"         # or paste the literal key here
+api_secret = "${BINANCE_API_SECRET}"   # or paste the literal secret here
+testnet = false
+
+# ---------------------------------------------------------------------------
+# An offline fixture account: serves recorded payloads instead of network calls
+# so multi-account switching can be proven without a second live account.
+# `fixture` is resolved relative to the repository root.
+# ---------------------------------------------------------------------------
+[accounts.paper]
+venue = "binance_futures"
+label = "Fixture"
+fixture = "tests/fixtures/account_paper.json"

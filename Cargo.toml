@@ -1,0 +1,42 @@
+[package]
+name = "cryptui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Terminal UI for monitoring multiple crypto exchange accounts (Binance USDⓈ-M Futures first)"
+license = "MIT"
+repository = "https://github.com/phl3x0r/cryptui"
+homepage = "https://github.com/phl3x0r/cryptui"
+readme = "README.md"
+keywords = ["tui", "trading", "binance", "futures", "ratatui"]
+categories = ["command-line-utilities", "finance"]
+authors = ["Niklas Hegnelt <wispster@gmail.com>"]
+
+[lib]
+name = "cryptui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cryptui"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+toml = "1.1.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+todo = "warn"

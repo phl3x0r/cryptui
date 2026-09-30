@@ -1,0 +1,20 @@
+# Build artefacts
+/target
+**/*.rs.bk
+
+# Secrets — never commit credentials or local configuration
+config.toml
+.env
+.envrc
+.direnv/
+*.key
+*.pem
+
+# Local tool state
+.mnemosyne-id
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
