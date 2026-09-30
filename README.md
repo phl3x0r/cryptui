@@ -7,44 +7,13 @@ in the spirit of the dense, panel-based trading terminals of the desktop world.
 the order book and additional venues are planned; the venue layer is already
 abstracted behind a trait so a new exchange does not touch UI code.
 
-```
-cryptui 0.1.1  ·  Fixture  ·  binance_futures                          positions ● live 0s   account ● live 0s
-SOLUSDT  15m  mark 200.0000  entry 194.5000  pnl +114.00  3 open positions
-┌ Chart  SOLUSDT · 15m MA7 201.5236  MA25 201.7533  MA99 201.5711  entry 194.5000  ● live 0s ────────────────┐
-│                                                           ⢀ ⡀⡀                     ⡄⡄⡄⢠            207.2916│
-│        ⡄⡄⢠⢠                    ⡀⣆⣼⣼⣄⡆⡄                  ⣰⣼⣼⠖⣷⣷⣰⡀                ⢀⣼⡼⡏⠏⢏⣿⣿⡤⣄                 │
-│     ⢀⣼⡼⡿⠏⠹⣻⢿⡦⡤⡀               ⣴⣷⡟⠘⢘⠬⢿⣿⣖⠤⡀             ⢠⣧⢿⠘⢀⠤⠒⠋⢿⣼⣕⠤⡀            ⡄⣿⡿⠁⢁⠔⠁⠈⠹⢹⣿⡕⠢⡀              │
-│    ⡀⣾⣿⠃⢁⠔⠊ ⠸⢹⣿⣎⠑⡄           ⣰⣸⡏⠋⢀⠔⠁  ⠃⡿⣼⡌⠢⡀         ⢀⢰⣿⡟⠈⡠⠃   ⠈⢻⢻⡆⡘⢄          ⡄⣿⠹⠁⡠⠊⣀⣀⣀⣀⡈⢿⣿⣰⠘⡄             │
-│   ⡀⣷⢻⠃⢠⠊ ⣀⣀⣀⡀⢻⣿⣰⠈⢆         ⣰⣿⡇⠃⣰⣁⠤⠤⠤⠤⠤⠥⣿⣿⡄⠘⢄       ⢀⢸⣞⣟⠤⡴⠕⠒⠒⠒⠒⠒⠒⠺⢳⣷⡤⣑⣄⡀    ⢀⣀⣼⣿⠯⢒⠎⠉⠉  ⣀⣀⣈⣉⣋⣿⣱⡺⢦⡄           │
-│⢀⣀⣼⣿⠯⠒⡖⠋⠉⠉   ⠈⠉⠋⣿⣱⡒⠳⢤⠤⠤⢄⡠⠤⢤⣦⣿⡟⢉⠝        ⠈⢻⢻⡏⡉⠲⡒⠒⠒⠒⠒⢒⣾⣿⠃⢠⠊         ⠈⢿⣿⢠⠈⠫⡉⠉⠉⠉⣹⣹⡟⢟⠖⠓⠊⠉⠉⠉⠉     ⠘⣿⣷⡀    200.6498│
-│⢠⢸⡏⠏⡠⠊          ⠘⢿⢿⡄⡈⠢⡀  ⢠⣿⡿⠘⡔⠁           ⠘⣷⣷⡄⠈⠢⣀ ⡄⣾⢻⡣⠒⠁           ⠈⠏⣿⣷⡀⡈⠢⣀⣼⣿⢇⡣⠊             ⠘⢸⢧⣧           │
-│⣿⣏⡯⠋⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⢹⢻⣿⣍⢉⢫⢽⣟⣟⠝⠋⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠏⡿⣽⣽⣩⣿⡿⠻⠋⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠙⢻⠻⡯⡯⡿⢻⠋⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠏   198.7413│
-│⠘⠁                  ⠛⡟⢺⢻⠻⠁                   ⠁⠘⠘ ⠃⠁                     ⠁⠁⠁                                 │
-│                                                                                                            │
-│⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒   194.5000│
-│⡤⣴⣶⢲⣿      ⣀⣠⣤⢴⢲⣶⡏⡇     ⢀⣠⢤⢤⡖⡖⣾⡇     ⢀⣀⣤⡤⡖⣶⣾⢹      ⣀⡤⣤⣴⢲⢲⣿      ⣀⣠⣤⢴⢲⡖⡏⡇     ⢀⣠⢤⣤⡖⡖⣾⡇     ⢀⣀⣤⡤⣴⣶⢲  55,000.00│
-│⡇⣿⣿⢸⣿⡤⡖⣶⢺⢹⣿⡇⣿⣿⢸⢸⣿⡇⣧⣴⢲⢲⣿⡏⣿⣿⢸⢸⡇⡇⣿⣧⢤⣶⡖⡏⣿⣿⢸⣿⡇⡇⣿⣿⢸⣤⡖⡖⣾⢹⢹⣿⡇⣿⣿⢸⢸⣿⡤⣴⣶⢺⢹⣿⡇⣿⣿⢸⢸⡇⡇⣧⣴⢲⣶⡏⡏⣿⣿⢸⣿⡇⡇⣿⣧⢤⣶⡖⡏⣿⢹⢸⣿⡇⣿⣿⢸           │
-│⣇⣿⣿⣸⣿⣇⣇⣿⣸⣸⣿⣇⣿⣿⣸⣸⣿⣇⣿⣿⣸⣸⣿⣇⣿⣿⣸⣸⣇⣇⣿⣿⣸⣿⣇⣇⣿⣿⣸⣿⣇⣇⣿⣿⣸⣿⣇⣇⣿⣸⣸⣿⣇⣿⣿⣸⣸⣿⣇⣿⣿⣸⣸⣿⣇⣿⣿⣸⣸⣇⣇⣿⣿⣸⣿⣇⣇⣿⣿⣸⣿⣇⣇⣿⣿⣸⣿⣇⣇⣿⣸⣸⣿⣇⣿⣿⣸           │
-│09-30 10:00                                09-30 20:00                                10-01 05:45           │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Positions (3) ─────────────────────────────────────────────────────────────────────────────────────────────┐
-│Symbol           Side    Notional      Entry        Mark         Margin       PnL ▼                         │
-│SOLUSDT          Long         4,400.00     194.5000     200.0000       430.00     +114.00 (+26.5%)          │
-│ETHUSDT          Short        3,600.00    3,080.000    3,000.000       720.00      +96.00 (+13.3%)          │
-│BTCUSDT          Long         4,250.00    84,200.00    85,000.00       850.00       +40.00 (+4.7%)          │
-│                                                                                                            │
-│                                                                                                            │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-Wallet 10,000.00  ·  Equity 10,250.00  ·  Unrealized +250.00  ·  Margin ratio 1.2%  ·  Available 8,000.00
-q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · n notional
-h/l pan · + - zoom · f follow · m MAs · p entry · [ ] interval · s symbol · a account · r refresh
-```
+![cryptui showing the fixture account: a candle chart with moving averages and an entry-price line, above a sortable positions table and an account footer](docs/screenshot.png)
 
-That frame is the bundled *fixture* account, so it renders with no network and
-no credentials:
+That is the bundled *fixture* account — three synthetic positions — so it
+renders with no network and no credentials. To produce that frame yourself:
 
 ```sh
-cryptui --account paper --dump-frame --width 110 --height 40 > frame.ans
+cryptui --account paper --dump-frame --width 118 --height 36 > frame.ans
 clear && cat frame.ans
 ```
 
