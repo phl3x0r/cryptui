@@ -45,7 +45,10 @@ pub(crate) fn wallet_series(
     let mut sorted: Vec<&IncomeRecord> = records.iter().collect();
     sorted.sort_by_key(|record| record.time_ms);
 
-    let start_day = oldest.div_euclid(DAY_MS);
+    // One day of anchor before the first record: nothing moved the balance
+    // before then, so the closing balance of that earlier day is knowable, and
+    // without it the first day's activity would be dropped from the metrics.
+    let start_day = oldest.div_euclid(DAY_MS) - 1;
     let end_day = now_ms.div_euclid(DAY_MS);
 
     let mut points = Vec::with_capacity((end_day - start_day + 1) as usize);
@@ -122,15 +125,20 @@ mod tests {
         let records = vec![income(3, TRANSFER, 500.0)];
         let series = wallet_series(&records, 1_090.0, 3 * DAY_MS);
 
-        assert_eq!(series.points()[0].wallet, 590.0);
+        let wallets: Vec<f64> = series.points().iter().map(|point| point.wallet).collect();
         assert_eq!(
-            series.points()[3].external_flow,
-            500.0,
-            "the flow is reported for its day"
+            wallets,
+            vec![590.0, 1_090.0],
+            "the balance before the deposit, then after it"
+        );
+        assert_eq!(
+            series.points().last().map(|point| point.external_flow),
+            Some(500.0),
+            "the flow is reported for its own day"
         );
 
         let returns = series.daily_returns();
-        assert_eq!(returns.len(), 3);
+        assert_eq!(returns.len(), 1, "the anchor day and the deposit day");
         assert!(
             returns.iter().all(|value| value.abs() < 1e-12),
             "paying money in is not performance: {returns:?}"
@@ -144,16 +152,20 @@ mod tests {
             income(2, "FUNDING_FEE", -10.0),
         ];
         let series = wallet_series(&records, 1_090.0, 2 * DAY_MS);
-        let returns = series.daily_returns();
 
-        // Day 1: 500 -> 600 is +20%. Day 2: 600 -> 590 is -1.67%.
-        assert!((returns[0] - 0.2).abs() < 1e-12, "{returns:?}");
-        assert!((returns[1] + 10.0 / 600.0).abs() < 1e-12, "{returns:?}");
+        // Balances: 1,000 (before any income), 1,100 after the profit, 1,090
+        // after the fee.
+        let wallets: Vec<f64> = series.points().iter().map(|point| point.wallet).collect();
+        assert_eq!(wallets, vec![1_000.0, 1_100.0, 1_090.0]);
+
+        let returns = series.daily_returns();
+        assert!((returns[0] - 0.1).abs() < 1e-12, "{returns:?}");
+        assert!((returns[1] + 10.0 / 1_100.0).abs() < 1e-12, "{returns:?}");
 
         let metrics = series.metrics().expect("two returns");
         assert!(
-            (metrics.max_drawdown - (10.0 / 600.0) / 1.2).abs() < 1e-12,
-            "the fee is the drawdown: {metrics:?}"
+            (metrics.max_drawdown - 10.0 / 1_100.0).abs() < 1e-12,
+            "the fee is the whole drawdown: {metrics:?}"
         );
     }
 
@@ -166,7 +178,11 @@ mod tests {
         let series = wallet_series(&records, 1_045.0, 4 * DAY_MS);
 
         let wallets: Vec<f64> = series.points().iter().map(|point| point.wallet).collect();
-        assert_eq!(wallets, vec![1_000.0, 1_050.0, 1_050.0, 1_050.0, 1_045.0]);
+        assert_eq!(
+            wallets,
+            vec![1_000.0, 1_050.0, 1_050.0, 1_050.0, 1_050.0, 1_045.0],
+            "the anchor day, then every day up to now"
+        );
     }
 
     #[test]
