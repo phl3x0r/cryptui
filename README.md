@@ -55,8 +55,7 @@ offline.
 
 ## Development
 
-The project is built phase by phase; [`PLAN.md`](PLAN.md) is the working
-document and records scope, decisions and verification evidence per phase.
+Install the pinned toolchain and run the same checks as CI:
 
 ```sh
 mise install          # Rust toolchain pinned by .mise.toml

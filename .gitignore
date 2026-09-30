@@ -13,6 +13,9 @@ config.toml
 # Local tool state
 .mnemosyne-id
 
+# Agent-maintained working notes — deliberately not published
+PLAN.md
+
 # Editor / OS noise
 .idea/
 .vscode/
