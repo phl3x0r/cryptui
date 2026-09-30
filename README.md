@@ -25,12 +25,15 @@ clear && cat frame.ans
 - **Candlestick chart** with MA(7/25/99) overlays, a volume pane, price and time
   axes, intervals from 1m to 1d, pan, zoom and follow mode.
 - **Symbol picker** over every tradable contract, not just the ones you hold.
-- **Account performance**: `e` opens a panel with the wallet-balance curve and
-  the figures that describe it — total return, CAGR, volatility, Sharpe, Sortino,
-  max drawdown, Calmar and win rate — over a month, three months, a year, or
-  everything on record (`1`–`4`, or `[`/`]`). The curve is reconstructed from the
-  venue's income records, net of deposits and withdrawals, and each run records
-  today's balance locally so longer windows fill in over time.
+- **Account performance**: `e` opens a full-screen panel with the equity curve
+  and the figures that describe it — total return, CAGR, volatility, Sharpe,
+  Sortino, max drawdown, Calmar, win rate, best and worst day — over a month,
+  three months, a year, or everything on record (`1`–`4`, or `[`/`]`). The curve
+  is a performance index, 100 at the start of the window, reconstructed from the
+  venue's income records and adjusted for deposits and withdrawals, so money paid
+  in does not read as a gain: `◆` marks every point where it moved, and `b` swaps
+  the index for the raw wallet balance. Each run records today's balance locally
+  so longer windows fill in over time.
 - **Size in contracts or in value**: the size column shows the position value in
   USDT by default, and `n` swaps it to contract amounts. Sorting follows
   whichever unit the column is showing.
@@ -119,15 +122,17 @@ synthetic — never record a real account into a repository.
 | `m` | Show or hide the moving averages |
 | `p` | Show or hide the entry-price line of a held position |
 | `n` | Swap the size column between position value and contract amount |
-| `e` | Open or close the account performance panel |
-| `1`–`4` | Performance window: 1 month, 3 months, 1 year, everything (`[`/`]` cycle) |
-| `[` / `]` | Longer / shorter candle interval |
+| `e` | Open or close the full-screen account performance panel |
+| `1`–`4` | In the panel: window of 1 month, 3 months, 1 year or everything |
+| `b` | In the panel: swap the curve between the performance index and the balance |
+| `[` / `]` | Longer / shorter candle interval, or the performance window in the panel |
 | `s` | Symbol picker (`Enter` picks, `Esc` cancels, typing filters) |
 | `a` | Switch to the next configured account |
 | `r` | Refresh now |
 
 Inside the symbol picker the global shortcuts are suspended, so `q` filters
-rather than quits.
+rather than quits. Inside the performance panel, `1`–`4`, `[`/`]` and `b` belong
+to the panel, and `Esc` closes it rather than quitting; the rest still works.
 
 ## Troubleshooting
 

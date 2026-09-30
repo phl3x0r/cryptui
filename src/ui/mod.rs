@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Drawn last so they sit above the panels.
     picker::render(frame, frame.area(), app);
-    performance::render(frame, frame.area(), app);
+    performance::render(frame, app);
 }
 
 /// Regions of the screen.

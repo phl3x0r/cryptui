@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 
 use crate::auth::now_ms;
 use crate::chart::{MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
-use crate::performance::{EquitySeries, Metrics, Window};
+use crate::performance::{CurveMode, EquitySeries, Metrics, Window};
 use crate::venue::{AccountSnapshot, Interval, Kline, Position, PositionSide, Symbol, VenueId};
 
 /// A column of the positions table.
@@ -520,6 +520,7 @@ pub struct PickerState {
 pub struct Performance {
     pub(crate) open: bool,
     pub(crate) window: Window,
+    pub(crate) mode: CurveMode,
     pub(crate) series: EquitySeries,
     pub(crate) feed: FeedStatus,
 }
@@ -798,10 +799,15 @@ impl App {
         self.picker = None;
         // Another account has another history, but the panel stays as the user
         // left it — open or closed — and refetches in the background.
-        let (open, window) = (self.performance.open, self.performance.window);
+        let (open, window, mode) = (
+            self.performance.open,
+            self.performance.window,
+            self.performance.mode,
+        );
         self.performance = Performance {
             open,
             window,
+            mode,
             ..Performance::default()
         };
         self.history_requested = open;
@@ -1035,6 +1041,11 @@ impl App {
     /// Label of the active account, for the panel's title.
     pub fn account_label(&self) -> &str {
         &self.account_label
+    }
+
+    /// Swap the curve between the performance index and the wallet balance.
+    pub fn toggle_curve_mode(&mut self) {
+        self.performance.mode.toggle();
     }
 
     /// The panel's state, for the UI.

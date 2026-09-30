@@ -8,10 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Account performance panel (`e`): the wallet-balance curve with total return,
-  CAGR, volatility, Sharpe, Sortino, max drawdown, Calmar, win rate, best and
-  worst day, over a selectable window of one month, three months, a year or
-  everything on record (`1`-`4`, `[`/`]`).
+- Account performance panel (`e`): a full-screen view of the equity curve and the
+  figures that describe it — total return, CAGR, volatility, Sharpe, Sortino, max
+  drawdown, Calmar, win rate, best and worst day — over a selectable window of one
+  month, three months, a year or everything on record (`1`-`4`, `[`/`]`).
+- The panel draws a performance index (100 at the start of the window, adjusted
+  for deposits and withdrawals), marking each flow with `◆`; `b` swaps it for the
+  raw wallet balance.
 - `--print performance [--window 1m|3m|1y|all]` for the same figures without a
   terminal.
 

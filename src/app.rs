@@ -163,6 +163,10 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
                 app.cycle_performance_window(true);
                 return;
             }
+            KeyCode::Char('b') => {
+                app.toggle_curve_mode();
+                return;
+            }
             KeyCode::Esc | KeyCode::Char('e') => {
                 app.close_performance();
                 return;

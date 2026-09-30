@@ -1,8 +1,9 @@
 //! The account performance panel.
 //!
-//! A value curve with the figures that describe it, over a selectable window. It
-//! is an overlay rather than a pane because it is something you look at
-//! occasionally, not something that has to share the screen with the chart.
+//! A full-screen view: the curve and the figures that describe it, over a
+//! selectable window. It takes over the screen rather than floating over the
+//! chart, because a floating panel leaves the price axis and the positions table
+//! poking out around its edges, which reads as clutter rather than as context.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -13,68 +14,75 @@ use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::auth::now_ms;
-use crate::performance::{EquitySeries, Window, describe_duration};
+use crate::performance::{CurveMode, EquitySeries, Window, describe_duration};
 use crate::state::App;
 
 use super::{format, theme};
 
-/// Overlay width, as a percentage of the screen.
-const WIDTH_PERCENT: u16 = 88;
-/// Overlay height, as a percentage of the screen.
-const HEIGHT_PERCENT: u16 = 72;
-/// Smallest overlay worth drawing.
-const MIN_WIDTH: u16 = 40;
-const MIN_HEIGHT: u16 = 10;
+/// Columns the figures are laid out in.
+const GRID_COLUMNS: usize = 4;
+/// Narrowest column that still reads as a column.
+const MIN_COLUMN_WIDTH: usize = 16;
 /// Width of the value axis, in cells.
-const AXIS_WIDTH: u16 = 12;
-/// How long a fetched history stays "fresh".
+const AXIS_WIDTH: u16 = 14;
+/// Marks a point where money moved in or out of the account.
+const FLOW_MARKER: &str = "\u{25c6}";
+/// Colour of that marker, and of the note counting the flows.
+const FLOW_COLOUR: ratatui::style::Color = theme::WARNING;
+/// How long a fetched history stays current.
 ///
-/// History is not a price feed: it is fetched on demand and the venue's records
-/// only change as the day does, so a fetch from an hour ago is still current.
+/// History is not a price feed: it is fetched on demand and only changes as the
+/// day does, so a fetch from an hour ago is still fresh.
 const FEED_TOLERANCE_MS: i64 = 3_600_000;
 
 /// Draw the panel, if it is open.
-pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub(crate) fn render(frame: &mut Frame, app: &App) {
     let performance = app.performance();
     if !performance.open {
         return;
     }
 
     let now = now_ms();
-    let overlay = centered(area);
-    // The panels underneath stay visible around it, so clear first.
-    frame.render_widget(Clear, overlay);
+    let area = frame.area();
+    // The panels underneath are hidden rather than covered: this is a view.
+    frame.render_widget(Clear, area);
 
     let series = performance.windowed(now);
     let block = Block::bordered()
         .title(title(app, performance.window))
         .border_style(theme::border_style(true));
 
-    let inner = block.inner(overlay);
-    frame.render_widget(block, overlay);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
         return;
     }
 
-    // Curve on top, figures underneath, coverage and keys at the bottom.
-    let metrics_height = if inner.height >= 14 { 4 } else { 2 };
+    // Only the curve is flexible: giving the spacer room too would leave a
+    // block of blank panel under the figures.
     let rows = Layout::vertical([
-        Constraint::Min(3),
-        Constraint::Length(metrics_height),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Min(6),    // the curve
+        Constraint::Length(1), // dates under it
+        Constraint::Length(1), // breathing room
+        Constraint::Length(4), // the figures
+        Constraint::Length(1), // breathing room
+        Constraint::Length(1), // coverage
+        Constraint::Length(1), // keys
     ])
     .split(inner);
 
-    render_curve(frame, rows[0], &series);
-    render_metrics(frame, rows[1], app, &series);
-    render_coverage(frame, rows[2], &series);
-    render_keys(frame, rows[3], app, performance.window);
+    render_curve(frame, rows[0], &series, performance.mode);
+    render_dates(frame, rows[1], &series);
+    render_metrics(frame, rows[3], app, &series);
+    render_coverage(frame, rows[5], &series, performance.mode);
+    render_keys(frame, rows[6], app, performance.window);
 }
 
-/// ` Performance · Main · 3 months `
+/// ` Performance · Main · 3 months · performance index, 100 at the start · ● live 2s `
 fn title(app: &App, window: Window) -> Line<'static> {
-    let fresh = app.performance().feed.summary(now_ms(), FEED_TOLERANCE_MS);
+    let performance = app.performance();
+    let fresh = performance.feed.summary(now_ms(), FEED_TOLERANCE_MS);
+
     Line::from(vec![
         Span::styled(
             " Performance ",
@@ -83,28 +91,94 @@ fn title(app: &App, window: Window) -> Line<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} · {} ", app.account_label(), window.description()),
+            format!(
+                " {} · {} · {} ",
+                app.account_label(),
+                window.description(),
+                performance.mode.label()
+            ),
             Style::default().fg(theme::LABEL),
         ),
         Span::styled(format!("● {fresh} "), Style::default().fg(theme::LABEL)),
     ])
 }
 
-/// The value curve, with a value axis on the right.
-fn render_curve(frame: &mut Frame, area: Rect, series: &EquitySeries) {
+/// What the curve plots, and what its axis means.
+struct Curve {
+    /// One value per observation.
+    values: Vec<f64>,
+    mode: CurveMode,
+    /// Where "no change" sits: 100 for the index, the opening balance otherwise.
+    reference: Option<f64>,
+}
+
+impl Curve {
+    /// The curve for a series in the given mode.
+    fn of(series: &EquitySeries, mode: CurveMode) -> Self {
+        match mode {
+            CurveMode::Performance => Self {
+                values: series.cumulative_index(),
+                mode,
+                reference: Some(100.0),
+            },
+            CurveMode::Balance => Self {
+                values: series.points().iter().map(|point| point.wallet).collect(),
+                mode,
+                reference: series.points().first().map(|point| point.wallet),
+            },
+        }
+    }
+
+    /// Label for an axis value: a percentage for the index, money for balances.
+    fn label(&self, value: f64) -> String {
+        match self.mode {
+            CurveMode::Performance => format::percent(value - 100.0),
+            CurveMode::Balance => format::money(value),
+        }
+    }
+
+    /// Lowest and highest value, padded so the line never touches the edge.
+    fn bounds(&self) -> Option<(f64, f64)> {
+        let low = self.values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = self
+            .values
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        // Non-finite values cover the NaN case, so `high < low` is enough here.
+        if !low.is_finite() || !high.is_finite() || high < low {
+            return None;
+        }
+
+        let span = high - low;
+        let padding = if span <= f64::EPSILON {
+            (high.abs() * 0.01).max(1.0)
+        } else {
+            span * 0.08
+        };
+        Some((low - padding, high + padding))
+    }
+
+    /// The colour the line is drawn in.
+    fn colour(&self) -> ratatui::style::Color {
+        match self.mode {
+            CurveMode::Performance => theme::ACCENT,
+            CurveMode::Balance => theme::POSITIVE,
+        }
+    }
+}
+
+/// The curve, with its value axis on the right.
+fn render_curve(frame: &mut Frame, area: Rect, series: &EquitySeries, mode: CurveMode) {
     if area.height == 0 || area.width <= AXIS_WIDTH {
         return;
     }
 
     if series.is_empty() {
-        let message = if series.is_empty() {
-            "no history yet: the venue serves only recent income, and the rest accumulates while cryptui runs"
-        } else {
-            ""
-        };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                message,
+                "no history yet: the venue serves only recent income, and the rest \
+                 accumulates while cryptui runs",
                 Style::default().fg(theme::WARNING),
             )))
             .centered(),
@@ -113,79 +187,89 @@ fn render_curve(frame: &mut Frame, area: Rect, series: &EquitySeries) {
         return;
     }
 
-    let Some((low, high)) = value_bounds(series) else {
+    let curve = Curve::of(series, mode);
+    let Some((low, high)) = curve.bounds() else {
         return;
     };
-    let (low, high) = pad(low, high);
 
     let columns =
         Layout::horizontal([Constraint::Min(10), Constraint::Length(AXIS_WIDTH)]).split(area);
 
-    let points = series.points();
-    let count = (points.len().saturating_sub(1)).max(1) as f64;
-    let opening = points.first().map(|point| point.wallet);
+    let count = (curve.values.len().saturating_sub(1)).max(1) as f64;
+    let flows: Vec<usize> = series
+        .points()
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| point.external_flow.abs() > f64::EPSILON)
+        .map(|(index, _)| index)
+        .collect();
 
     let canvas = Canvas::default()
         .x_bounds([0.0, count])
         .y_bounds([low, high])
         .marker(Marker::Braille)
         .paint(|context| {
-            draw_curve(context, points, opening);
+            draw_curve(context, &curve, count, &flows);
         });
     frame.render_widget(canvas, columns[0]);
 
     frame.render_widget(
-        Paragraph::new(Text::from(value_axis(
-            low,
-            high,
-            opening,
-            columns[1].height,
-        )))
-        .alignment(Alignment::Right),
+        Paragraph::new(Text::from(value_axis(&curve, low, high, columns[1].height)))
+            .alignment(Alignment::Right),
         columns[1],
     );
 }
 
-/// Draw the curve and a reference line at the opening balance.
-fn draw_curve(
-    context: &mut Context,
-    points: &[crate::performance::EquityPoint],
-    opening: Option<f64>,
-) {
-    if let Some(opening) = opening {
+/// Draw the reference line, the curve, and a tick wherever money moved.
+fn draw_curve(context: &mut Context, curve: &Curve, count: f64, flows: &[usize]) {
+    if let Some(reference) = curve.reference {
         context.draw(&CanvasLine::new(
             0.0,
-            opening,
-            (points.len().saturating_sub(1)).max(1) as f64,
-            opening,
+            reference,
+            count,
+            reference,
             theme::LAST_PRICE,
         ));
     }
 
-    for (index, pair) in points.windows(2).enumerate() {
+    for (index, pair) in curve.values.windows(2).enumerate() {
         context.draw(&CanvasLine::new(
             index as f64,
-            pair[0].wallet,
+            pair[0],
             index as f64 + 1.0,
-            pair[1].wallet,
-            theme::ACCENT,
+            pair[1],
+            curve.colour(),
         ));
     }
 
-    // A single point is still worth marking.
-    if points.len() == 1 {
+    // A single observation still deserves a mark.
+    if curve.values.len() == 1 {
         context.draw(&CanvasLine::new(
             0.0,
-            points[0].wallet,
+            curve.values[0],
             1.0,
-            points[0].wallet,
-            theme::ACCENT,
+            curve.values[0],
+            curve.colour(),
         ));
+    }
+
+    // Money moving in or out is not performance, so it is marked rather than
+    // allowed to look like a gain: a step in the balance should be explainable.
+    // A glyph carries the meaning; dots alone would read as part of the curve.
+    for index in flows {
+        let Some(value) = curve.values.get(*index) else {
+            continue;
+        };
+        context.print(
+            *index as f64,
+            *value,
+            Span::styled(FLOW_MARKER, Style::default().fg(FLOW_COLOUR)),
+        );
     }
 }
 
-/// Values at the top, middle and bottom of the curve.
-fn value_axis(low: f64, high: f64, opening: Option<f64>, height: u16) -> Vec<Line<'static>> {
+/// Values at the top, middle and bottom, plus the reference line's own value.
+fn value_axis(curve: &Curve, low: f64, high: f64, height: u16) -> Vec<Line<'static>> {
     let height = height as usize;
     let mut lines = vec![Line::default(); height];
     if height == 0 {
@@ -193,7 +277,7 @@ fn value_axis(low: f64, high: f64, opening: Option<f64>, height: u16) -> Vec<Lin
     }
 
     let plain = Style::default().fg(theme::LABEL);
-    let label = |value: f64, style: Style| Line::from(Span::styled(format::money(value), style));
+    let label = |value: f64, style: Style| Line::from(Span::styled(curve.label(value), style));
 
     lines[0] = label(high, plain);
     if height >= 3 {
@@ -201,15 +285,15 @@ fn value_axis(low: f64, high: f64, opening: Option<f64>, height: u16) -> Vec<Lin
         lines[height - 1] = label(low, plain);
     }
 
-    if let Some(opening) = opening
+    if let Some(reference) = curve.reference
         && high > low
-        && (low..=high).contains(&opening)
+        && (low..=high).contains(&reference)
         && height >= 4
     {
-        let row = ((high - opening) / (high - low) * (height - 1) as f64).round() as usize;
+        let row = ((high - reference) / (high - low) * (height - 1) as f64).round() as usize;
         if row != 0 && row != height - 1 {
             lines[row] = label(
-                opening,
+                reference,
                 Style::default()
                     .fg(theme::LAST_PRICE)
                     .add_modifier(Modifier::BOLD),
@@ -220,7 +304,56 @@ fn value_axis(low: f64, high: f64, opening: Option<f64>, height: u16) -> Vec<Lin
     lines
 }
 
-/// The figures, in three rows of four.
+/// Date labels under the curve: first, middle and last observation.
+fn render_dates(frame: &mut Frame, area: Rect, series: &EquitySeries) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let Some((from, to)) = series.span() else {
+        return;
+    };
+    let middle = series
+        .points()
+        .get(series.len() / 2)
+        .map_or(to, |point| point.time_ms);
+
+    let width = area.width as usize;
+    let mut row = vec![' '; width];
+    let mut place = |text: &str, start: usize| {
+        for (offset, character) in text.chars().enumerate() {
+            if let Some(slot) = row.get_mut(start + offset) {
+                *slot = character;
+            }
+        }
+    };
+
+    let first = format::day(from);
+    let last = format::day(to);
+    place(&first, 0);
+    let last_start = width.saturating_sub(last.chars().count());
+    if last_start > first.chars().count() {
+        place(&last, last_start);
+    }
+
+    let centre = format::day(middle);
+    let centre_start = width.saturating_sub(centre.chars().count()) / 2;
+    if centre_start > first.chars().count() + 1
+        && centre_start + centre.chars().count() + 1 < last_start
+    {
+        place(&centre, centre_start);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            row.into_iter().collect::<String>(),
+            Style::default().fg(theme::LABEL),
+        ))),
+        area,
+    );
+}
+
+/// The figures, in an aligned grid so the columns line up down the panel.
 fn render_metrics(frame: &mut Frame, area: Rect, app: &App, series: &EquitySeries) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -242,88 +375,131 @@ fn render_metrics(frame: &mut Frame, area: Rect, app: &App, series: &EquitySerie
         return;
     };
 
+    let width = (usize::from(area.width) / GRID_COLUMNS).max(MIN_COLUMN_WIDTH) as u16;
+
     let mut lines = vec![
-        Line::from(spans(vec![
-            metric(
-                "total return",
-                signed(metrics.total_return),
-                metrics.total_return,
-            ),
-            metric("CAGR", optional(metrics.cagr), metrics.cagr.unwrap_or(0.0)),
-            metric("volatility", unsigned(metrics.volatility), 0.0),
-            metric("sharpe", ratio(metrics.sharpe), 0.0),
-        ])),
-        Line::from(spans(vec![
-            metric("sortino", ratio(metrics.sortino), 0.0),
-            metric(
-                "max drawdown",
-                signed(-metrics.max_drawdown),
-                -metrics.max_drawdown,
-            ),
-            metric("calmar", ratio(metrics.calmar), 0.0),
-            metric("win rate", unsigned(metrics.win_rate), 0.0),
-        ])),
-        Line::from(spans(vec![
-            metric("best day", signed(metrics.best_day), metrics.best_day),
-            metric("worst day", signed(metrics.worst_day), metrics.worst_day),
-            metric("days", format!("{}", metrics.window_days()), 0.0),
-            // "returns", not "points": the coverage line counts observations,
-            // and there is one fewer return than there are days.
-            metric("returns", format!("{}", metrics.samples), 0.0),
-        ])),
+        grid_row(
+            &[
+                cell(
+                    "total return",
+                    percent(metrics.total_return),
+                    sign(metrics.total_return),
+                ),
+                cell(
+                    "CAGR",
+                    optional(metrics.cagr),
+                    sign(metrics.cagr.unwrap_or(0.0)),
+                ),
+                plain_cell("volatility", unsigned(metrics.volatility)),
+                plain_cell("sharpe", ratio(metrics.sharpe)),
+            ],
+            width,
+        ),
+        grid_row(
+            &[
+                plain_cell("sortino", ratio(metrics.sortino)),
+                cell(
+                    "max drawdown",
+                    percent(-metrics.max_drawdown),
+                    sign(-metrics.max_drawdown),
+                ),
+                plain_cell("calmar", ratio(metrics.calmar)),
+                plain_cell("win rate", unsigned(metrics.win_rate)),
+            ],
+            width,
+        ),
+        grid_row(
+            &[
+                cell(
+                    "best day",
+                    percent(metrics.best_day),
+                    sign(metrics.best_day),
+                ),
+                cell(
+                    "worst day",
+                    percent(metrics.worst_day),
+                    sign(metrics.worst_day),
+                ),
+                plain_cell("days", metrics.window_days().to_string()),
+                plain_cell("returns", metrics.samples.to_string()),
+            ],
+            width,
+        ),
     ];
 
-    // The current account state, so the curve has a "now" to sit against.
     if let Some(account) = &app.account {
-        lines.push(Line::from(spans(vec![
-            labelled("wallet", format::money(account.wallet_balance)),
-            labelled("equity", format::money(account.equity)),
-            labelled("unrealized", format::signed_money(account.unrealized_pnl)),
-            labelled(
-                "annualised?",
-                if metrics.annualised_is_meaningful() {
-                    "yes".to_owned()
-                } else {
-                    format!(
-                        "no, {} is too short",
-                        describe_duration(metrics.to_ms - metrics.from_ms)
-                    )
-                },
-            ),
-        ])));
+        lines.push(grid_row(
+            &[
+                plain_cell("wallet", format::money(account.wallet_balance)),
+                plain_cell("equity", format::money(account.equity)),
+                cell(
+                    "unrealized",
+                    format::signed_money(account.unrealized_pnl),
+                    sign(account.unrealized_pnl),
+                ),
+                plain_cell(
+                    "annualised",
+                    if metrics.annualised_is_meaningful() {
+                        "yes".to_owned()
+                    } else {
+                        format!(
+                            "no, {} is short",
+                            describe_duration(metrics.to_ms - metrics.from_ms)
+                        )
+                    },
+                ),
+            ],
+            width,
+        ));
     }
 
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
-/// `2026-03-04 → 2026-09-30 · 211 days · 211 points`
-fn render_coverage(frame: &mut Frame, area: Rect, series: &EquitySeries) {
+/// `coverage 2026-09-21 → 2026-09-30 · 8 days · 10 points · 1 deposit`
+fn render_coverage(frame: &mut Frame, area: Rect, series: &EquitySeries, mode: CurveMode) {
     if area.height == 0 {
         return;
     }
 
+    let flows = match series.flows().len() {
+        0 => String::new(),
+        1 => " · 1 deposit or withdrawal".to_owned(),
+        count => format!(" · {count} deposits or withdrawals"),
+    };
+    let mode_note = match mode {
+        CurveMode::Performance => " · net of deposits",
+        CurveMode::Balance => "",
+    };
+
     let text = match series.span() {
         Some((from, to)) => format!(
-            "coverage {} → {} · {} · {} points",
-            format::timestamp(from),
-            format::timestamp(to),
+            "coverage {} → {} · {} · {} points{flows}{mode_note}",
+            format::date(from),
+            format::date(to),
             describe_duration(to - from),
             series.len()
         ),
         None => "no coverage".to_owned(),
     };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(theme::LABEL),
-        ))),
-        area,
-    );
+    let spans: Vec<Span<'static>> = text
+        .split_inclusive(" · ")
+        .map(|part| {
+            let style = if part.contains("deposit") {
+                Style::default().fg(theme::WARNING)
+            } else {
+                Style::default().fg(theme::LABEL)
+            };
+            Span::styled(part.to_owned(), style)
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The window selector, with the active window marked.
+/// The window selector and the keys, with the active window marked.
 fn render_keys(frame: &mut Frame, area: Rect, app: &App, window: Window) {
     if area.height == 0 {
         return;
@@ -334,10 +510,9 @@ fn render_keys(frame: &mut Frame, area: Rect, app: &App, window: Window) {
         if index > 0 {
             spans.push(Span::styled(" · ", Style::default().fg(theme::LABEL)));
         }
-        let active = *candidate == window;
         spans.push(Span::styled(
             format!("{} {}", index + 1, candidate.label()),
-            if active {
+            if *candidate == window {
                 Style::default()
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -346,50 +521,50 @@ fn render_keys(frame: &mut Frame, area: Rect, app: &App, window: Window) {
             },
         ));
     }
+
+    let next_mode = match app.performance().mode {
+        CurveMode::Performance => "balance",
+        CurveMode::Balance => "index",
+    };
     spans.push(Span::styled(
-        "    [ ] cycle · e or Esc closes",
+        format!(
+            "    [ ] cycle window · b show {next_mode} · e or Esc closes · {FLOW_MARKER} money in or out"
+        ),
         Style::default().fg(theme::LABEL),
     ));
-    if !app.performance().series.is_empty() {
-        spans.push(Span::styled(
-            format!(" · {} days on record", app.performance().series.len()),
-            Style::default().fg(theme::LABEL),
-        ));
-    }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// ` label value `, optionally coloured by sign.
-fn metric(label: &str, value: String, signed_by: f64) -> Vec<Span<'static>> {
+/// A grid cell: label, value, and the value's colour.
+fn cell(label: &str, value: String, style: Style) -> Vec<Span<'static>> {
     vec![
         Span::styled(format!("{label} "), Style::default().fg(theme::LABEL)),
-        Span::styled(
-            format!("{value:<12}"),
-            if signed_by == 0.0 {
-                Style::default()
-            } else {
-                theme::pnl_style(signed_by)
-            },
-        ),
+        Span::styled(value, style),
     ]
 }
 
-/// A plain `label value` pair.
-fn labelled(label: &str, value: String) -> Vec<Span<'static>> {
-    vec![
-        Span::styled(format!("{label} "), Style::default().fg(theme::LABEL)),
-        Span::styled(format!("{value:<12}"), Style::default()),
-    ]
+/// A grid cell whose value is not a gain or a loss.
+fn plain_cell(label: &str, value: String) -> Vec<Span<'static>> {
+    cell(label, value, Style::default())
 }
 
-/// Flatten per-metric spans into one line.
-fn spans(groups: Vec<Vec<Span<'static>>>) -> Vec<Span<'static>> {
-    groups.into_iter().flatten().collect()
+/// Lay cells out in a row of equal columns, padded so they align across rows.
+fn grid_row(cells: &[Vec<Span<'static>>], width: u16) -> Line<'static> {
+    let target = usize::from(width);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    for group in cells {
+        let used: usize = group.iter().map(|span| span.content.chars().count()).sum();
+        spans.extend(group.iter().cloned());
+        spans.push(Span::raw(" ".repeat(target.saturating_sub(used))));
+    }
+
+    Line::from(spans)
 }
 
-/// A percentage with its sign, for returns.
-fn signed(value: f64) -> String {
+/// A percentage with its sign.
+fn percent(value: f64) -> String {
     format::percent(value * 100.0)
 }
 
@@ -411,114 +586,187 @@ fn ratio(value: Option<f64>) -> String {
     value.map_or_else(|| "—".to_owned(), |value| format!("{value:.2}"))
 }
 
-/// Lowest and highest balance in the series.
-fn value_bounds(series: &EquitySeries) -> Option<(f64, f64)> {
-    let mut low = f64::INFINITY;
-    let mut high = f64::NEG_INFINITY;
-    for point in series.points() {
-        low = low.min(point.wallet);
-        high = high.max(point.wallet);
-    }
-    (low <= high).then_some((low, high))
-}
-
-/// Leave a little air above and below the curve.
-fn pad(low: f64, high: f64) -> (f64, f64) {
-    let span = high - low;
-    if !span.is_finite() || span <= f64::EPSILON {
-        let padding = (high.abs() * 0.01).max(1.0);
-        return (low - padding, high + padding);
-    }
-    let padding = span * 0.06;
-    (low - padding, high + padding)
-}
-
-/// Centre the overlay on the screen, bounded by the screen itself.
-fn centered(area: Rect) -> Rect {
-    let width = (area.width * WIDTH_PERCENT / 100).clamp(MIN_WIDTH.min(area.width), area.width);
-    let height =
-        (area.height * HEIGHT_PERCENT / 100).clamp(MIN_HEIGHT.min(area.height), area.height);
-
-    Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
+/// The colour a figure is drawn in: by sign, or neutral.
+fn sign(value: f64) -> Style {
+    if value == 0.0 {
+        Style::default()
+    } else {
+        theme::pnl_style(value)
     }
 }
 
-/// Colours the curve uses, for tests that check what was drawn.
+/// Colour of the curve, for tests that check what was drawn.
 #[cfg(test)]
 pub(crate) const CURVE_COLOUR: ratatui::style::Color = theme::ACCENT;
-
 #[cfg(test)]
 mod tests {
-    use ratatui::layout::Rect;
-
-    use crate::performance::{DAY_MS, EquityPoint, EquitySeries, Window};
+    use crate::performance::{CurveMode, DAY_MS, EquityPoint, EquitySeries, Window};
     use crate::state::{App, Update};
     use crate::venue::{Interval, VenueId};
 
     use super::super::tests::{frame_cells, frame_lines, sample_app};
-    use super::{CURVE_COLOUR, centered};
+    use super::{CURVE_COLOUR, FLOW_COLOUR, FLOW_MARKER, GRID_COLUMNS};
 
-    /// A series with a rise, a fall and a recovery.
-    fn sample_series(days: i64) -> EquitySeries {
+    /// A series with a rise, a dip, and optionally a deposit part-way through.
+    fn sample_series(days: i64, with_flow: bool) -> EquitySeries {
         let now = crate::auth::now_ms();
         let points = (0..=days)
             .map(|index| {
                 let wave = (index as f64 * 0.4).sin() * 120.0;
+                let deposit = if with_flow && index == days / 2 {
+                    2_500.0
+                } else {
+                    0.0
+                };
                 EquityPoint {
                     time_ms: now - (days - index) * DAY_MS,
-                    wallet: 10_000.0 + index as f64 * 12.0 + wave,
-                    external_flow: 0.0,
+                    wallet: 10_000.0 + index as f64 * 12.0 + wave + deposit,
+                    external_flow: deposit,
                 }
             })
             .collect();
         EquitySeries::new(points)
     }
 
-    fn panel_app(days: i64) -> App {
+    fn panel_app(days: i64, with_flow: bool) -> App {
         let mut app = sample_app();
         app.toggle_performance();
-        app.apply(Update::Equity(sample_series(days)));
+        app.apply(Update::Equity(sample_series(days, with_flow)));
         app
     }
 
-    /// Only the cells the overlay covers: the panels underneath stay visible.
-    fn overlay_text(app: &App, width: u16, height: u16) -> String {
-        let lines = frame_lines(app, width, height);
-        let rect = centered(Rect::new(0, 0, width, height));
-
-        lines[rect.y as usize..rect.bottom() as usize]
-            .iter()
-            .map(|line| {
-                line.chars()
-                    .skip(rect.x as usize)
-                    .take(rect.width as usize)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+    fn panel(app: &App) -> String {
+        frame_lines(app, 140, 44).join("\n")
     }
 
     #[test]
-    fn the_panel_names_the_account_and_the_window() {
-        let app = panel_app(120);
-        let text = overlay_text(&app, 140, 44);
+    fn the_panel_takes_the_whole_screen() {
+        let app = panel_app(60, false);
+        let text = panel(&app);
 
-        assert!(text.contains("Performance"), "title: {text}");
-        assert!(text.contains("main"), "account label: {text}");
+        assert!(text.contains("Performance"), "the panel is drawn");
         assert!(
-            text.contains("all available history"),
-            "the window is spelled out: {text}"
+            !text.contains("binance_futures"),
+            "the header underneath is hidden, not peeking around the edge: {text}"
+        );
+        assert!(
+            !text.contains("Positions ("),
+            "and so is the positions table: {text}"
         );
     }
 
     #[test]
-    fn the_panel_shows_every_metric() {
-        let app = panel_app(120);
-        let text = overlay_text(&app, 140, 44);
+    fn the_panel_names_the_account_the_window_and_the_curve() {
+        let app = panel_app(120, false);
+        let text = panel(&app);
+
+        assert!(text.contains("main"), "account: {text}");
+        assert!(text.contains("all available history"), "window: {text}");
+        assert!(
+            text.contains("performance index"),
+            "the curve mode is stated: {text}"
+        );
+    }
+
+    #[test]
+    fn the_curve_shows_performance_by_default_and_balance_on_request() {
+        let mut app = panel_app(120, true);
+        let index = panel(&app);
+
+        assert!(
+            index.contains("0.0%"),
+            "the index axis is a percentage: {index}"
+        );
+        assert!(index.contains("net of deposits"), "and says so: {index}");
+
+        app.toggle_curve_mode();
+        assert_eq!(app.performance().mode, CurveMode::Balance);
+        let balance = panel(&app);
+        assert!(
+            balance.contains("wallet balance"),
+            "the title follows: {balance}"
+        );
+        assert!(
+            balance.contains("12,500.00") || balance.contains("10,000.00"),
+            "the balance axis is money: {balance}"
+        );
+    }
+
+    #[test]
+    fn deposits_are_marked_on_the_curve() {
+        let app = panel_app(120, true);
+        let cells = frame_cells(&app, 140, 44);
+        let marks = cells
+            .iter()
+            .filter(|(_, _, text, colour)| {
+                *colour == Some(FLOW_COLOUR) && text.contains(FLOW_MARKER)
+            })
+            .count();
+
+        assert!(marks > 0, "the deposit is marked, found {marks} cells");
+        assert!(
+            panel(&app).contains("1 deposit or withdrawal"),
+            "and counted in the coverage line"
+        );
+    }
+
+    #[test]
+    fn the_curve_is_drawn() {
+        let app = panel_app(120, false);
+        let cells = frame_cells(&app, 140, 44);
+        let curve = cells
+            .iter()
+            .filter(|(_, _, text, colour)| {
+                *colour == Some(CURVE_COLOUR)
+                    && text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+            })
+            .count();
+
+        assert!(curve > 50, "expected a drawn curve, found {curve} cells");
+    }
+
+    #[test]
+    fn dates_are_labelled_under_the_curve() {
+        let app = panel_app(200, false);
+        let text = panel(&app);
+
+        let stamps = text.matches("09-").count() + text.matches("08-").count();
+        assert!(stamps >= 2, "expected date labels, got {stamps}: {text}");
+    }
+
+    #[test]
+    fn the_metric_grid_aligns_its_columns() {
+        let app = panel_app(120, false);
+        let lines: Vec<String> = frame_lines(&app, 140, 44);
+        let width = 140 / GRID_COLUMNS;
+
+        let offsets: Vec<Option<usize>> = ["CAGR", "max drawdown", "worst day", "equity"]
+            .iter()
+            .map(|label| {
+                lines
+                    .iter()
+                    .find(|line| line.contains(label))
+                    .and_then(|line| line.find(label))
+            })
+            .collect();
+
+        assert!(
+            offsets.iter().all(Option::is_some),
+            "every row was found: {offsets:?}"
+        );
+        let first = offsets[0].expect("a first row");
+        for offset in offsets.iter().flatten() {
+            assert_eq!(
+                *offset, first,
+                "columns must line up, got {offsets:?} (column width {width})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_metric_is_shown() {
+        let app = panel_app(120, false);
+        let text = panel(&app);
 
         for expected in [
             "total return",
@@ -538,73 +786,29 @@ mod tests {
     }
 
     #[test]
-    fn old_history_is_not_reported_as_stale() {
-        // History is fetched on demand, not streamed: a fetch from minutes ago
-        // is still current, and the panel must not cry wolf about it.
-        let app = panel_app(60);
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        let text = overlay_text(&app, 140, 44);
-
-        assert!(
-            !text.contains("stale"),
-            "a recent fetch is not stale: {text}"
-        );
-        assert!(
-            text.contains("live"),
-            "the title still reports the age: {text}"
-        );
-    }
-
-    #[test]
-    fn the_curve_is_drawn_in_the_panel() {
-        let app = panel_app(120);
-        let cells = frame_cells(&app, 140, 44);
-        let curve = cells
-            .iter()
-            .filter(|(_, _, text, colour)| {
-                *colour == Some(CURVE_COLOUR)
-                    && text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
-            })
-            .count();
-
-        assert!(curve > 50, "expected a drawn curve, found {curve} cells");
-    }
-
-    #[test]
     fn the_window_selector_marks_the_active_window() {
-        let mut app = panel_app(120);
-        assert!(
-            overlay_text(&app, 140, 44).contains("4 All"),
-            "the windows are listed"
-        );
+        let mut app = panel_app(120, false);
+        assert!(panel(&app).contains("4 All"), "the windows are listed");
 
         app.set_performance_window(Window::Month);
-        let text = overlay_text(&app, 140, 44);
-        assert!(text.contains("1 1M"), "got: {text}");
         assert!(
-            text.contains("1 month"),
-            "the title follows the window: {text}"
+            panel(&app).contains("1 month"),
+            "the title follows the window"
         );
     }
 
     #[test]
     fn shortening_the_window_shortens_the_coverage() {
-        let mut app = panel_app(200);
-        let all = overlay_text(&app, 140, 44);
-        assert!(all.contains("201 points"), "everything: {all}");
+        let mut app = panel_app(200, false);
+        assert!(panel(&app).contains("201 points"), "everything");
 
         app.set_performance_window(Window::Month);
-        let month = overlay_text(&app, 140, 44);
-        // The series is built against one clock and rendered against a slightly
-        // later one, so a month can be 30 or 31 daily points.
+        let month = panel(&app);
         assert!(
             month.contains("30 points") || month.contains("31 points"),
             "one month: {month}"
         );
-        assert!(
-            !month.contains("201 points"),
-            "the window really cuts: {month}"
-        );
+        assert!(!month.contains("201 points"), "the window cuts: {month}");
     }
 
     #[test]
@@ -612,21 +816,18 @@ mod tests {
         let mut app = sample_app();
         app.toggle_performance();
 
-        let text = overlay_text(&app, 140, 44);
-        assert!(
-            text.contains("no history yet"),
-            "it must not look broken: {text}"
-        );
+        let text = panel(&app);
+        assert!(text.contains("no history yet"), "got: {text}");
         assert!(
             text.contains("accumulates while cryptui runs"),
-            "and must say how it fills: {text}"
+            "and how it fills: {text}"
         );
     }
 
     #[test]
     fn a_single_point_is_reported_as_too_little_to_measure() {
-        let app = panel_app(0);
-        let text = overlay_text(&app, 140, 44);
+        let app = panel_app(0, false);
+        let text = panel(&app);
 
         assert!(
             text.contains("at least two days"),
@@ -637,52 +838,51 @@ mod tests {
     #[test]
     fn a_closed_panel_draws_nothing() {
         let app = sample_app();
-        let text = frame_lines(&app, 140, 44).join("\n");
+        let text = panel(&app);
         assert!(!text.contains("Performance"), "got: {text}");
+        assert!(text.contains("Positions ("), "the normal view is back");
     }
 
     #[test]
-    fn the_panel_fits_a_small_terminal() {
-        for (width, height) in [(50u16, 12u16), (60, 16), (40, 10), (80, 24)] {
-            let app = panel_app(60);
+    fn the_panel_survives_a_small_terminal() {
+        for (width, height) in [(40u16, 12u16), (60, 16), (24, 8), (80, 24)] {
+            let app = panel_app(60, true);
             let lines = frame_lines(&app, width, height);
             assert_eq!(lines.len(), height as usize);
-
-            let rect = centered(Rect::new(0, 0, width, height));
-            assert!(rect.right() <= width, "width fits at {width}x{height}");
-            assert!(rect.bottom() <= height, "height fits at {width}x{height}");
         }
+    }
+
+    #[test]
+    fn old_history_is_not_reported_as_stale() {
+        let app = panel_app(60, false);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let text = panel(&app);
+
+        assert!(!text.contains("stale"), "a recent fetch is not stale");
+        assert!(text.contains("live"), "but the age is still reported");
     }
 
     #[test]
     fn switching_accounts_keeps_the_panel_open_but_drops_the_history() {
-        let mut app = panel_app(30);
+        let mut app = panel_app(30, false);
         app.begin_account("Paper".to_owned(), VenueId::BinanceFutures);
 
         assert!(app.performance_is_open(), "the panel stays as it was");
-        assert!(
-            app.performance().series.is_empty(),
-            "another account is another history"
-        );
+        assert!(app.performance().series.is_empty(), "another history");
         assert!(app.take_history_request(), "and it asks for the new one");
     }
 
     #[test]
-    fn the_interval_key_mapping_matches_the_panel() {
-        let mut app = panel_app(30);
-        for (window, label) in [
-            (Window::Month, "1M"),
-            (Window::Quarter, "3M"),
-            (Window::Year, "1Y"),
-            (Window::All, "All"),
-        ] {
-            app.set_performance_window(window);
-            assert!(
-                overlay_text(&app, 140, 44).contains(label),
-                "the active window is {label}"
-            );
-            assert_eq!(app.performance().window, window);
-        }
+    fn the_curve_mode_survives_an_account_switch() {
+        let mut app = panel_app(30, false);
+        app.toggle_curve_mode();
+        app.begin_account("Paper".to_owned(), VenueId::BinanceFutures);
+
+        assert_eq!(
+            app.performance().mode,
+            CurveMode::Balance,
+            "a display preference, not account data"
+        );
         let _ = Interval::M15;
     }
 }

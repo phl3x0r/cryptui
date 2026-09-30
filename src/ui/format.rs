@@ -42,12 +42,29 @@ pub fn percent_plain(value: f64) -> String {
     format!("{}%", group(&format!("{value:.1}")))
 }
 
+/// Format a millisecond timestamp as UTC `YYYY-MM-DD`.
+pub fn date(milliseconds: i64) -> String {
+    let format = time::macros::format_description!("[year]-[month]-[day]");
+    render(milliseconds, format)
+}
+
+/// Format a millisecond timestamp as UTC `MM-DD`.
+pub fn day(milliseconds: i64) -> String {
+    let format = time::macros::format_description!("[month]-[day]");
+    render(milliseconds, format)
+}
+
 /// Format a millisecond timestamp as UTC `MM-DD HH:MM`.
 pub fn timestamp(milliseconds: i64) -> String {
     let format = time::macros::format_description!("[month]-[day] [hour]:[minute]");
+    render(milliseconds, format)
+}
+
+/// Format a timestamp, or an em dash when it cannot be represented.
+fn render(milliseconds: i64, format: &[time::format_description::FormatItem<'_>]) -> String {
     time::OffsetDateTime::from_unix_timestamp(milliseconds / 1_000)
         .ok()
-        .and_then(|stamp| stamp.format(&format).ok())
+        .and_then(|value| value.format(format).ok())
         .unwrap_or_else(|| "—".to_owned())
 }
 
@@ -118,7 +135,9 @@ fn group(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{money, percent, percent_plain, price, quantity, signed_money, timestamp};
+    use super::{
+        date, day, money, percent, percent_plain, price, quantity, signed_money, timestamp,
+    };
 
     #[test]
     fn large_prices_keep_two_decimals_and_separators() {
@@ -151,6 +170,13 @@ mod tests {
     fn plain_percentages_carry_no_sign() {
         assert_eq!(percent_plain(2.414_2), "2.4%");
         assert_eq!(percent_plain(0.0), "0.0%");
+    }
+
+    #[test]
+    fn dates_and_days_drop_the_time() {
+        assert_eq!(date(1_790_726_400_000), "2026-09-30");
+        assert_eq!(day(1_790_773_200_000), "09-30");
+        assert_eq!(day(i64::MIN), "—");
     }
 
     #[test]

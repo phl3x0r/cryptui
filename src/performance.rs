@@ -85,6 +85,34 @@ impl Window {
     }
 }
 
+/// What the performance curve plots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CurveMode {
+    /// The flow-adjusted index: what the account did, independent of deposits.
+    #[default]
+    Performance,
+    /// The wallet balance itself, where a deposit shows as a step up.
+    Balance,
+}
+
+impl CurveMode {
+    /// Swap between the two views.
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::Performance => Self::Balance,
+            Self::Balance => Self::Performance,
+        };
+    }
+
+    /// What the curve is showing, for the panel.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Performance => "performance index, 100 at the start",
+            Self::Balance => "wallet balance",
+        }
+    }
+}
+
 /// The account's value at the end of one day.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EquityPoint {
@@ -261,6 +289,41 @@ impl EquitySeries {
         })
     }
 
+    /// The performance index: what the account did, independent of deposits.
+    ///
+    /// Starts at 100 and compounds each day's flow-adjusted return, so paying
+    /// money in or taking it out leaves the line where it was. This is the curve
+    /// that agrees with the metrics; the wallet balance does not, because a
+    /// deposit moves it without being performance.
+    pub fn cumulative_index(&self) -> Vec<f64> {
+        let mut values = Vec::with_capacity(self.points.len());
+        let mut value = 100.0;
+        values.push(value);
+
+        for pair in self.points.windows(2) {
+            let (previous, next) = (&pair[0], &pair[1]);
+            if previous.wallet > 0.0 {
+                value *=
+                    1.0 + (next.wallet - previous.wallet - next.external_flow) / previous.wallet;
+            }
+            // A day with no usable opening balance carries the index forward
+            // rather than dropping a point, so the curve stays aligned with the
+            // observations.
+            values.push(value);
+        }
+
+        values
+    }
+
+    /// Observations where money entered or left the account.
+    pub fn flows(&self) -> Vec<(i64, f64)> {
+        self.points
+            .iter()
+            .filter(|point| point.external_flow.abs() > f64::EPSILON)
+            .map(|point| (point.time_ms, point.external_flow))
+            .collect()
+    }
+
     /// Day-over-day returns, adjusted for deposits and withdrawals.
     ///
     /// Days whose opening balance is not positive are skipped rather than
@@ -354,7 +417,7 @@ pub fn describe_duration(milliseconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DAY_MS, EquityPoint, EquitySeries, Metrics, Window, describe_duration};
+    use super::{CurveMode, DAY_MS, EquityPoint, EquitySeries, Metrics, Window, describe_duration};
 
     fn point(day: i64, wallet: f64) -> EquityPoint {
         EquityPoint {
@@ -566,6 +629,84 @@ mod tests {
         assert_eq!(Window::Month.label(), "1M");
         assert_eq!(Window::All.start_ms(now), None, "everything has no start");
         assert_eq!(Window::Month.start_ms(now), Some(now - 30 * DAY_MS));
+    }
+
+    #[test]
+    fn the_curve_mode_swaps_both_ways() {
+        let mut mode = CurveMode::default();
+        assert_eq!(mode, CurveMode::Performance, "performance by default");
+        mode.toggle();
+        assert_eq!(mode, CurveMode::Balance);
+        mode.toggle();
+        assert_eq!(mode, CurveMode::Performance);
+        assert!(CurveMode::Balance.label().contains("balance"));
+    }
+
+    #[test]
+    fn the_index_ignores_deposits_and_follows_performance() {
+        let series = EquitySeries::new(vec![
+            point(0, 100.0),
+            // A deposit of 100: the balance doubles, the index must not move.
+            EquityPoint {
+                time_ms: DAY_MS,
+                wallet: 200.0,
+                external_flow: 100.0,
+            },
+            // Then a real 10% gain.
+            point(2, 220.0),
+        ]);
+        let index = series.cumulative_index();
+
+        assert_eq!(index.len(), 3, "one value per observation");
+        assert!((index[0] - 100.0).abs() < 1e-12);
+        assert!(
+            (index[1] - 100.0).abs() < 1e-12,
+            "a deposit is not performance: {index:?}"
+        );
+        assert!(
+            (index[2] - 110.0).abs() < 1e-12,
+            "the gain shows up: {index:?}"
+        );
+
+        let metrics = series.metrics().expect("history");
+        assert!(
+            (index[2] - (1.0 + metrics.total_return) * 100.0).abs() < 1e-9,
+            "the curve ends where the metric says"
+        );
+    }
+
+    #[test]
+    fn the_index_stays_aligned_when_a_day_cannot_be_measured() {
+        // The opening balance is zero, so that day's return is skipped.
+        let series = EquitySeries::new(vec![point(0, 0.0), point(1, 100.0), point(2, 110.0)]);
+        let index = series.cumulative_index();
+
+        assert_eq!(index.len(), 3, "still one value per observation");
+        assert_eq!(index[0], 100.0);
+        assert_eq!(index[1], 100.0, "nothing measurable yet");
+        assert!((index[2] - 110.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn flows_are_reported_for_marking() {
+        let series = EquitySeries::new(vec![
+            point(0, 100.0),
+            EquityPoint {
+                time_ms: DAY_MS,
+                wallet: 150.0,
+                external_flow: 50.0,
+            },
+            EquityPoint {
+                time_ms: 2 * DAY_MS,
+                wallet: 100.0,
+                external_flow: -50.0,
+            },
+        ]);
+
+        let flows = series.flows();
+        assert_eq!(flows.len(), 2);
+        assert_eq!(flows[0].1, 50.0);
+        assert_eq!(flows[1].1, -50.0);
     }
 
     #[test]
