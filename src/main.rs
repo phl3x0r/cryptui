@@ -138,8 +138,19 @@ async fn main() -> ExitCode {
         return fail("no accounts configured");
     }
 
+    // `--account` selects the opening account, exactly as it does for the
+    // headless commands; an unknown name is an error rather than a silent
+    // fallback to the configured default.
+    let active = match select_account(&cli, &config, &handles) {
+        Ok(handle) => handles
+            .iter()
+            .position(|candidate| candidate.name() == handle.name())
+            .unwrap_or_default(),
+        Err(error) => return fail(error),
+    };
+
     let options = RunOptions {
-        active: accounts::default_index(&config, &handles),
+        active,
         accounts: handles,
         interval: effective_interval(&cli, &config),
         refresh_interval_ms: config.settings().refresh_interval_ms(),

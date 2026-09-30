@@ -13,8 +13,7 @@ use super::{format, theme};
 /// Table and navigation hints.
 const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse";
 /// Chart and account hints.
-const HINTS_MORE: &str =
-    "h/l pan · + - zoom · f follow · [ ] interval · s symbol · a account · r refresh";
+const HINTS_MORE: &str = "h/l pan · + - zoom · f follow · m MAs · p entry · [ ] interval · s symbol · a account · r refresh";
 
 /// Draw the footer.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {

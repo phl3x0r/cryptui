@@ -19,6 +19,9 @@ use super::{format, theme};
 const AXIS_WIDTH: u16 = 11;
 /// Smallest price pane worth drawing.
 const MIN_PRICE_HEIGHT: u16 = 3;
+/// How far the price range may stretch to keep the entry line visible, as a
+/// multiple of the visible candle range.
+const ENTRY_RANGE_LIMIT: f64 = 3.0;
 /// Half-width of a candle body, in candle slots.
 const BODY_HALF_WIDTH: f64 = 0.34;
 /// Colour of each moving-average line, in [`MOVING_AVERAGE_WINDOWS`] order.
@@ -28,8 +31,10 @@ const AVERAGE_COLORS: [Color; MOVING_AVERAGE_WINDOWS.len()] =
 /// Draw the chart panel.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let chart = &app.chart;
+    // Resolved first: both the title and the plot annotate it.
+    let entry = entry_price(app);
     let block = Block::bordered()
-        .title(panel_title(app))
+        .title(panel_title(app, entry))
         .border_style(theme::border_style(true));
 
     let inner = block.inner(area);
@@ -44,7 +49,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let Some((low, high)) = chart.price_bounds() else {
+    let Some((low, high)) = chart.price_bounds_with(entry, ENTRY_RANGE_LIMIT) else {
         return;
     };
     let (low, high) = pad_bounds(low, high);
@@ -78,7 +83,10 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .paint(|context| {
             draw_last_price(context, last_close, count);
             draw_candles(context, chart.visible());
-            draw_averages(context, chart);
+            if chart.overlays.averages {
+                draw_averages(context, chart);
+            }
+            draw_entry(context, entry, count);
         });
     frame.render_widget(price, panes[0]);
 
@@ -122,8 +130,8 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// ` Chart  BTCUSDT · 15m  MA7 … MA25 … MA99 …  ● live 2s `
-fn panel_title(app: &App) -> Line<'static> {
+/// ` Chart  BTCUSDT · 15m  MA7 … MA25 … MA99 …  entry 84,200.00  ● live 2s `
+fn panel_title(app: &App, entry: Option<f64>) -> Line<'static> {
     let chart = &app.chart;
     let symbol = chart.symbol.clone().unwrap_or_else(|| "—".to_owned());
     let mut spans = vec![
@@ -139,18 +147,33 @@ fn panel_title(app: &App) -> Line<'static> {
         ),
     ];
 
-    for ((window, value), color) in MOVING_AVERAGE_WINDOWS
-        .iter()
-        .zip(chart.latest_averages())
-        .zip(AVERAGE_COLORS)
-    {
-        let text = match value {
-            Some(value) => format!("MA{window} {}", format::price(value)),
-            None => format!("MA{window} —"),
-        };
+    if chart.overlays.averages {
+        for ((window, value), color) in MOVING_AVERAGE_WINDOWS
+            .iter()
+            .zip(chart.latest_averages())
+            .zip(AVERAGE_COLORS)
+        {
+            let text = match value {
+                Some(value) => format!("MA{window} {}", format::price(value)),
+                None => format!("MA{window} —"),
+            };
+            spans.push(Span::styled(
+                format!("{text}  "),
+                Style::default().fg(color),
+            ));
+        }
+    } else {
+        // Say that they are hidden, so the toggle is discoverable.
         spans.push(Span::styled(
-            format!("{text}  "),
-            Style::default().fg(color),
+            "MAs off (m)  ",
+            Style::default().fg(theme::LABEL),
+        ));
+    }
+
+    if let Some(price) = entry {
+        spans.push(Span::styled(
+            format!("entry {}  ", format::price(price)),
+            Style::default().fg(theme::ENTRY),
         ));
     }
 
@@ -190,6 +213,22 @@ fn render_message(frame: &mut Frame, area: Rect, chart: &Chart) {
         Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))).centered(),
         area,
     );
+}
+
+/// Entry price to annotate: only when the overlay is on and the charted
+/// contract is actually held.
+fn entry_price(app: &App) -> Option<f64> {
+    if !app.chart.overlays.entry {
+        return None;
+    }
+    app.chart_position().map(|position| position.entry_price)
+}
+
+/// Draw the position's entry price as a line across the pane.
+fn draw_entry(context: &mut Context, entry: Option<f64>, count: f64) {
+    if let Some(price) = entry {
+        context.draw(&CanvasLine::new(0.0, price, count, price, theme::ENTRY));
+    }
 }
 
 /// Draw the newest close as a reference line across the pane.
@@ -378,6 +417,18 @@ mod tests {
 
     use super::super::tests::{frame_lines, sample_account, sample_app, sample_candles};
 
+    /// The chart panel's title row, where the overlay legend lives.
+    ///
+    /// Assertions must be scoped to it: the header also mentions the selected
+    /// position's entry price, so a whole-frame check would pass or fail for the
+    /// wrong reason.
+    fn title_line(app: &App) -> String {
+        frame_lines(app, 140, 40)
+            .into_iter()
+            .find(|line| line.contains("Chart"))
+            .expect("the chart panel is rendered")
+    }
+
     /// An app whose chart holds deterministic candles.
     fn chart_app() -> App {
         let mut app = sample_app();
@@ -477,6 +528,62 @@ mod tests {
 
         app.zoom_chart(0.5);
         assert!(app.chart.visible().len() < before, "zooming in shows fewer");
+    }
+
+    #[test]
+    fn hiding_the_averages_removes_their_lines_and_legend() {
+        let mut app = chart_app();
+        assert!(
+            frame_lines(&app, 140, 40).join("\n").contains("MA7"),
+            "the legend is there by default"
+        );
+
+        app.toggle_averages();
+        let text = frame_lines(&app, 140, 40).join("\n");
+        assert!(!text.contains("MA7"), "the legend is gone: {text}");
+        assert!(
+            text.contains("MAs off (m)"),
+            "the title says they are hidden and how to get them back: {text}"
+        );
+        assert!(text.contains("BTCUSDT"), "the chart itself still renders");
+    }
+
+    #[test]
+    fn the_entry_line_is_annotated_for_a_held_contract() {
+        let title = title_line(&chart_app());
+        assert!(
+            title.contains("entry 85,000.00"),
+            "the held contract's entry price is labelled: {title}"
+        );
+    }
+
+    #[test]
+    fn hiding_the_entry_line_removes_its_annotation() {
+        let mut app = chart_app();
+        app.toggle_entry_line();
+
+        let title = title_line(&app);
+        assert!(!title.contains("entry"), "got: {title}");
+        assert!(title.contains("MA7"), "the averages are unaffected");
+    }
+
+    #[test]
+    fn a_contract_that_is_not_held_has_no_entry_line() {
+        let mut app = sample_app();
+        app.set_chart_symbol("SOLUSDT".to_owned());
+        app.chart.reset("SOLUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "SOLUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: sample_candles(),
+        });
+
+        let title = title_line(&app);
+        assert!(title.contains("SOLUSDT"), "the chart renders it: {title}");
+        assert!(
+            !title.contains("entry"),
+            "there is no position, so no entry line: {title}"
+        );
     }
 
     #[test]

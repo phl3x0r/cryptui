@@ -235,6 +235,39 @@ pub enum Update {
     },
 }
 
+/// Chart overlays the user can switch off.
+///
+/// These are preferences rather than data, so they survive switching symbol,
+/// interval and account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overlays {
+    /// The moving-average lines and their legend.
+    pub averages: bool,
+    /// A line at the entry price of the contract being charted, when it is held.
+    pub entry: bool,
+}
+
+impl Default for Overlays {
+    fn default() -> Self {
+        Self {
+            averages: true,
+            entry: true,
+        }
+    }
+}
+
+impl Overlays {
+    /// Show or hide the moving averages.
+    pub fn toggle_averages(&mut self) {
+        self.averages = !self.averages;
+    }
+
+    /// Show or hide the entry-price line.
+    pub fn toggle_entry(&mut self) {
+        self.entry = !self.entry;
+    }
+}
+
 /// The candle chart: what it shows, and where its window sits.
 ///
 /// The chart owns its own target (symbol and interval) so a reload triggered by
@@ -247,6 +280,8 @@ pub struct Chart {
     pub(crate) averages: [Vec<Option<f64>>; MOVING_AVERAGE_WINDOWS.len()],
     pub(crate) viewport: Viewport,
     pub(crate) follow: bool,
+    /// Which overlays are drawn.
+    pub(crate) overlays: Overlays,
     pub(crate) feed: FeedStatus,
 }
 
@@ -260,6 +295,7 @@ impl Chart {
             averages: Default::default(),
             viewport: Viewport::new(Viewport::DEFAULT_VISIBLE),
             follow: true,
+            overlays: Overlays::default(),
             feed: FeedStatus::default(),
         }
     }
@@ -355,6 +391,26 @@ impl Chart {
             }
         }
         (low <= high).then_some((low, high))
+    }
+
+    /// Price range for the chart, widened to keep `extra` on screen.
+    ///
+    /// An entry price far from the current price would otherwise fall outside the
+    /// pane, which is exactly when it is most worth seeing. It is only included
+    /// while it stays within `limit` times the candle range, so one extreme
+    /// position cannot squash the candles into a line.
+    pub fn price_bounds_with(&self, extra: Option<f64>, limit: f64) -> Option<(f64, f64)> {
+        let (low, high) = self.price_bounds()?;
+        let Some(price) = extra.filter(|price| price.is_finite()) else {
+            return Some((low, high));
+        };
+
+        let allowed = (high - low).max(f64::MIN_POSITIVE) * limit;
+        if price >= low - allowed && price <= high + allowed {
+            Some((low.min(price), high.max(price)))
+        } else {
+            Some((low, high))
+        }
     }
 
     /// Largest visible volume, used to scale the volume pane.
@@ -856,6 +912,38 @@ impl App {
         self.picker_matches().get(selected).copied()
     }
 
+    /// Show or hide the chart's moving averages.
+    pub fn toggle_averages(&mut self) {
+        self.chart.overlays.toggle_averages();
+    }
+
+    /// Show or hide the entry-price line on the chart.
+    pub fn toggle_entry_line(&mut self) {
+        self.chart.overlays.toggle_entry();
+    }
+
+    /// Whether the chart is showing moving averages.
+    pub fn shows_averages(&self) -> bool {
+        self.chart.overlays.averages
+    }
+
+    /// Whether the chart is showing the entry-price line.
+    pub fn shows_entry_line(&self) -> bool {
+        self.chart.overlays.entry
+    }
+
+    /// The open position for the contract the chart is showing, if there is one.
+    ///
+    /// Looked up by symbol rather than by the selected row: the chart can be
+    /// pointed at a contract from the picker, and the selection can move while
+    /// the chart keeps its own target.
+    pub fn chart_position(&self) -> Option<&Position> {
+        let symbol = self.chart.symbol.as_deref()?;
+        self.positions
+            .iter()
+            .find(|position| position.symbol == symbol)
+    }
+
     /// Pan the chart window, leaving follow mode when stepping into history.
     pub fn pan_chart(&mut self, delta: isize) {
         self.chart.pan(delta);
@@ -1176,6 +1264,108 @@ mod tests {
         app.close_picker();
         assert!(!app.picker_is_open());
         assert_eq!(app.effective_symbol(), None);
+    }
+
+    #[test]
+    fn overlays_start_on_and_toggle_independently() {
+        let mut app = app_with(Vec::new());
+        assert!(app.shows_averages(), "moving averages start visible");
+        assert!(app.shows_entry_line(), "the entry line starts visible");
+
+        app.toggle_averages();
+        assert!(!app.shows_averages());
+        assert!(app.shows_entry_line(), "the other overlay is untouched");
+
+        app.toggle_entry_line();
+        assert!(!app.shows_entry_line());
+        app.toggle_averages();
+        assert!(app.shows_averages(), "toggling back restores it");
+    }
+
+    #[test]
+    fn overlay_preferences_survive_data_changes() {
+        let mut app = app_with(vec![position("AAAUSDT", 1.0, 1.0)]);
+        app.toggle_averages();
+        app.toggle_entry_line();
+
+        // Symbol change, interval change and account switch all drop data.
+        app.chart.reset("BBBUSDT".to_owned(), Interval::H1);
+        assert!(!app.shows_averages(), "a new symbol keeps the preference");
+        assert!(!app.shows_entry_line());
+
+        app.begin_account("Paper".to_owned(), VenueId::BinanceFutures);
+        assert!(!app.shows_averages(), "a new account keeps the preference");
+        assert!(!app.shows_entry_line());
+    }
+
+    #[test]
+    fn the_charted_contract_is_looked_up_by_symbol() {
+        let mut app = app_with(vec![
+            position("AAAUSDT", 1.0, 1.0),
+            position("BBBUSDT", 2.0, 1.0),
+        ]);
+        assert!(app.chart_position().is_none(), "no chart target yet");
+
+        app.chart.reset("BBBUSDT".to_owned(), Interval::M15);
+        assert_eq!(
+            app.chart_position().map(|p| p.symbol.as_str()),
+            Some("BBBUSDT"),
+            "found even though it is not the selected row"
+        );
+
+        // The picker can point the chart at something that is not held.
+        app.set_chart_symbol("ZZZUSDT".to_owned());
+        app.chart.reset("ZZZUSDT".to_owned(), Interval::M15);
+        assert!(app.chart_position().is_none());
+    }
+
+    #[test]
+    fn the_entry_price_is_kept_on_screen_within_reason() {
+        let mut app = app_with(Vec::new());
+        app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "AAAUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: (0..20)
+                .map(|index| crate::venue::Kline {
+                    open_time_ms: index * 900_000,
+                    open: 100.0,
+                    high: 101.0,
+                    low: 99.0,
+                    close: 100.0,
+                    volume: 1.0,
+                    close_time_ms: index * 900_000 + 899_999,
+                    closed: true,
+                })
+                .collect(),
+        });
+        let (low, high) = app.chart.price_bounds().expect("bounds");
+        assert_eq!((low, high), (99.0, 101.0));
+
+        // Just below the range: widened so the line is visible.
+        let (low, high) = app
+            .chart
+            .price_bounds_with(Some(97.0), 3.0)
+            .expect("bounds");
+        assert_eq!((low, high), (97.0, 101.0), "the entry is included");
+
+        // Far below: the candles win, and the line simply falls outside.
+        let (low, high) = app
+            .chart
+            .price_bounds_with(Some(1.0), 3.0)
+            .expect("bounds");
+        assert_eq!((low, high), (99.0, 101.0), "an extreme entry is ignored");
+
+        // No entry at all.
+        let (low, high) = app.chart.price_bounds_with(None, 3.0).expect("bounds");
+        assert_eq!((low, high), (99.0, 101.0));
+
+        // Nonsense values must not corrupt the range.
+        let (low, high) = app
+            .chart
+            .price_bounds_with(Some(f64::NAN), 3.0)
+            .expect("bounds");
+        assert_eq!((low, high), (99.0, 101.0));
     }
 
     #[test]

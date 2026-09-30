@@ -6,7 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Toggleable chart overlays: `m` shows or hides the moving averages, and `p`
+  shows or hides the entry-price line of the position being charted. When the
+  entry is outside the visible range the price range widens to include it, up to
+  a bounded multiple of the candle range, so an extreme position cannot squash
+  the candles into a line.
+
+### Fixed
+
+- `--account <name>` now selects the opening account in the interactive UI. It
+  was only honoured by the headless commands, so `cryptui --account paper`
+  silently opened the configured default account instead. An unknown name is now
+  reported as an error rather than falling back silently.
 
 ## [0.1.0] - 2026-09-30
 

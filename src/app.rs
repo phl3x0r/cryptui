@@ -153,6 +153,8 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
         KeyCode::Char('+') | KeyCode::Char('=') => app.zoom_chart(1.25),
         KeyCode::Char('-') | KeyCode::Char('_') => app.zoom_chart(0.8),
         KeyCode::Char('f') => app.follow_chart(),
+        KeyCode::Char('m') => app.toggle_averages(),
+        KeyCode::Char('p') => app.toggle_entry_line(),
         KeyCode::Char('r') => {
             // A full queue already means a refresh is pending.
             let _ = refresh.try_send(());
