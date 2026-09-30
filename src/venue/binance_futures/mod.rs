@@ -6,6 +6,7 @@
 //! endpoint returns every symbol. `leverage` was dropped by v3, so it is not
 //! modelled yet — sourcing it would cost a second signed call per refresh.
 
+mod income;
 mod rest;
 mod wire;
 mod ws;

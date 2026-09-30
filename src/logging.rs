@@ -79,12 +79,24 @@ pub fn log_path_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
 
+    Some(state_dir_from(env)?.join("cryptui.log"))
+}
+
+/// Directory for everything this tool keeps between runs.
+///
+/// `$XDG_STATE_HOME/cryptui`, or `~/.local/state/cryptui`.
+pub fn state_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let state = env("XDG_STATE_HOME")
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".local/state")))?;
 
-    Some(state.join("cryptui").join("cryptui.log"))
+    Some(state.join("cryptui"))
+}
+
+/// Directory for everything this tool keeps between runs.
+pub fn state_dir() -> Option<PathBuf> {
+    state_dir_from(&|name| std::env::var(name).ok())
 }
 
 /// Create the log file and its directory, appending to what is there.

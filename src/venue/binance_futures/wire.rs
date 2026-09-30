@@ -7,6 +7,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::venue::binance_futures::income::IncomeRecord;
 use crate::venue::{AccountSnapshot, Balance, Kline, Position, PositionSide, Symbol};
 
 /// Error body returned for failed requests.
@@ -66,6 +67,38 @@ struct SymbolInfo {
     base_asset: String,
     quote_asset: String,
     contract_type: String,
+}
+
+/// `GET /fapi/v1/income` row.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IncomeRow {
+    time: i64,
+    income_type: String,
+    income: Num,
+}
+
+/// Balance changes, oldest first.
+pub(crate) fn income(payload: Value) -> Result<Vec<IncomeRecord>, String> {
+    let mut rows: Vec<IncomeRow> =
+        serde_json::from_value(payload).map_err(|error| format!("income: {error}"))?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows.drain(..) {
+        records.push(IncomeRecord {
+            time_ms: row.time,
+            income_type: row.income_type,
+            amount: row.income.f64()?,
+        });
+    }
+    records.sort_by_key(|record| record.time_ms);
+    Ok(records)
+}
+
+/// The wallet balance from an account payload: the anchor for a reconstructed
+/// curve, and what the local recorder stores each day.
+pub(crate) fn wallet_balance(payload: &Value) -> Result<f64, String> {
+    account(payload.clone()).map(|snapshot| snapshot.wallet_balance)
 }
 
 /// `GET /fapi/v3/positionRisk`

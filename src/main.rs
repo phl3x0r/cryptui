@@ -12,7 +12,9 @@ use clap::{Parser, ValueEnum};
 use cryptui::accounts::{self, AccountHandle};
 use cryptui::app::{self, RunOptions};
 use cryptui::config::{self, Config};
+use cryptui::history;
 use cryptui::logging::{self, Sink};
+use cryptui::performance::{EquitySeries, Window, describe_duration};
 use cryptui::state::{App, Update};
 use cryptui::ui::{self, format};
 use cryptui::venue::{Interval, Venue};
@@ -57,6 +59,10 @@ struct Cli {
     #[arg(long, value_name = "SYMBOL")]
     symbol: Option<String>,
 
+    /// Window used by `--print performance`: 1m, 3m, 1y or all.
+    #[arg(long, value_name = "WINDOW", default_value = "all")]
+    window: WindowArg,
+
     /// Candle interval; defaults to `settings.default_interval` from the config.
     #[arg(long, value_name = "INTERVAL")]
     interval: Option<Interval>,
@@ -81,6 +87,35 @@ enum PrintKind {
     Balances,
     /// Candles for a symbol.
     Klines,
+    /// Account performance: the value curve and its metrics.
+    Performance,
+}
+
+/// Window of history that `--print performance` covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum WindowArg {
+    /// The last month.
+    #[value(alias = "1m")]
+    Month,
+    /// The last three months.
+    #[value(alias = "3m")]
+    Quarter,
+    /// The last year.
+    #[value(alias = "1y")]
+    Year,
+    /// Everything available.
+    All,
+}
+
+impl From<WindowArg> for Window {
+    fn from(argument: WindowArg) -> Self {
+        match argument {
+            WindowArg::Month => Self::Month,
+            WindowArg::Quarter => Self::Quarter,
+            WindowArg::Year => Self::Year,
+            WindowArg::All => Self::All,
+        }
+    }
 }
 
 #[tokio::main]
@@ -127,6 +162,7 @@ async fn main() -> ExitCode {
             PrintKind::Positions => print_positions(&cli, &config).await,
             PrintKind::Balances => print_balances(&cli, &config).await,
             PrintKind::Klines => print_klines(&cli, &config).await,
+            PrintKind::Performance => print_performance(&cli, &config).await,
         };
     }
 
@@ -386,6 +422,101 @@ async fn print_balances(cli: &Cli, config: &Config) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// `--print performance`
+async fn print_performance(cli: &Cli, config: &Config) -> ExitCode {
+    let (label, venue) = match open(cli, config).await {
+        Ok(opened) => opened,
+        Err(error) => return fail(error),
+    };
+
+    let window: Window = cli.window.into();
+    let now = cryptui::auth::now_ms();
+    let since = window.start_ms(now).unwrap_or(i64::MIN);
+    let store = history::Store::for_account(&label);
+    let series = history::load(store.as_ref(), venue.as_ref(), since).await;
+    let windowed = series.window(window, now);
+
+    if windowed.is_empty() {
+        println!("{label}: no performance history available");
+        println!(
+            "  the venue serves only recent income, and nothing has been recorded yet;\n  \
+             history accumulates in {} while cryptui runs",
+            store
+                .as_ref()
+                .map(|store| store.path().display().to_string())
+                .unwrap_or_else(|| "the state directory".to_owned())
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    print_performance_report(&label, window, &windowed);
+    ExitCode::SUCCESS
+}
+
+/// Print a window's coverage and metrics.
+fn print_performance_report(label: &str, window: Window, series: &EquitySeries) {
+    println!("{label}: performance over {}", window.description());
+
+    let (from, to) = series.span().unwrap_or((0, 0));
+    println!(
+        "  coverage       {} → {} ({} points over {})",
+        format_time(from),
+        format_time(to),
+        series.len(),
+        describe_duration(to - from)
+    );
+
+    let Some(metrics) = series.metrics() else {
+        println!("  not enough history to measure");
+        return;
+    };
+
+    let percent = |value: Option<f64>| {
+        value.map_or_else(|| "—".to_owned(), |value| format::percent(value * 100.0))
+    };
+    let ratio =
+        |value: Option<f64>| value.map_or_else(|| "—".to_owned(), |value| format!("{value:.2}"));
+    // A share is not a gain or a loss, so it carries no sign.
+    let unsigned = |value: Option<f64>| {
+        value.map_or_else(
+            || "—".to_owned(),
+            |value| format::percent_plain(value * 100.0),
+        )
+    };
+
+    println!("  total return   {}", percent(Some(metrics.total_return)));
+    println!(
+        "  CAGR           {}{}",
+        percent(metrics.cagr),
+        if metrics.annualised_is_meaningful() {
+            ""
+        } else {
+            "  (window too short to annualise)"
+        }
+    );
+    println!("  volatility     {}", unsigned(metrics.volatility));
+    println!("  sharpe         {}", ratio(metrics.sharpe));
+    println!("  sortino        {}", ratio(metrics.sortino));
+    println!(
+        "  max drawdown   {}",
+        format::percent(-metrics.max_drawdown * 100.0)
+    );
+    println!("  calmar         {}", ratio(metrics.calmar));
+    println!("  win rate       {}", unsigned(metrics.win_rate));
+    println!(
+        "  best / worst   {} / {}",
+        format::percent(metrics.best_day * 100.0),
+        format::percent(metrics.worst_day * 100.0)
+    );
+
+    if !metrics.annualised_is_meaningful() {
+        println!(
+            "  note           annualised figures over {} are noise; history accumulates while cryptui runs",
+            describe_duration(metrics.to_ms - metrics.from_ms)
+        );
+    }
 }
 
 /// `--print klines`

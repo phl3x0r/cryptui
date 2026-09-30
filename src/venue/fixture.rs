@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::auth::now_ms;
+use crate::performance::{EquityPoint, EquitySeries};
 use crate::venue::{
     AccountSnapshot, Interval, Kline, Position, Symbol, Venue, VenueError, VenueFuture, VenueId,
 };
@@ -27,6 +29,9 @@ struct FixtureFile {
     /// Candles keyed by `SYMBOL|interval`, oldest first.
     #[serde(default)]
     klines: HashMap<String, Vec<Kline>>,
+    /// Daily wallet balances, oldest first.
+    #[serde(default)]
+    equity: Vec<EquityPoint>,
 }
 
 /// A venue that answers everything from a file.
@@ -116,6 +121,38 @@ impl Venue for FixtureVenue {
             let start = candles.len().saturating_sub(limit);
             Ok(candles[start..].to_vec())
         })
+    }
+
+    fn equity_history(&self, since_ms: i64) -> VenueFuture<'_, EquitySeries> {
+        Box::pin(async move {
+            // The synthetic history is rebased to end today, so the windows stay
+            // meaningful however long the fixture has been sitting in the repo.
+            let shift = self
+                .file
+                .equity
+                .iter()
+                .map(|point| point.time_ms)
+                .max()
+                .map_or(0, |last| now_ms() - last);
+
+            Ok(EquitySeries::new(
+                self.file
+                    .equity
+                    .iter()
+                    .map(|point| EquityPoint {
+                        time_ms: point.time_ms + shift,
+                        ..*point
+                    })
+                    .filter(|point| point.time_ms >= since_ms)
+                    .collect(),
+            ))
+        })
+    }
+
+    fn records_history(&self) -> bool {
+        // The fixture already carries a complete series; recording observations
+        // on top of it would mix two accounts of the same days.
+        false
     }
 }
 
@@ -212,6 +249,52 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("BTCUSDT|1h"), "got: {message}");
         assert!(message.contains("fixture"), "got: {message}");
+    }
+
+    #[tokio::test]
+    async fn the_fixture_serves_a_wallet_history_ending_today() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/account_paper.json");
+        let venue = FixtureVenue::load(&path).expect("fixture loads");
+
+        let history = venue.equity_history(0).await.expect("history");
+        assert!(
+            history.len() > 100,
+            "months of daily points, got {}",
+            history.len()
+        );
+
+        let (_, last) = history.span().expect("a span");
+        let age = crate::auth::now_ms() - last;
+        assert!(
+            age < 86_400_000,
+            "the synthetic history is rebased to end today, but ended {} ms ago",
+            age
+        );
+
+        assert!(
+            !venue.records_history(),
+            "a fixture must not have local observations mixed into it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fixture_history_is_windowed() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/account_paper.json");
+        let venue = FixtureVenue::load(&path).expect("fixture loads");
+        let now = crate::auth::now_ms();
+
+        let month = venue
+            .equity_history(now - 30 * crate::performance::DAY_MS)
+            .await
+            .expect("history");
+        assert!(
+            (28..=32).contains(&month.len()),
+            "a month of points, got {}",
+            month.len()
+        );
+        assert!(month.metrics().is_some(), "a month is enough to measure");
     }
 
     #[tokio::test]

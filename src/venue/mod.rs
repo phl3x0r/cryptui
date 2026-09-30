@@ -14,6 +14,8 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
+use crate::performance::EquitySeries;
+
 /// Which exchange and market an account talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -351,6 +353,24 @@ pub trait Venue: Send + Sync {
 
     /// The most recent `limit` candles for `symbol`, oldest first.
     fn klines(&self, symbol: &str, interval: Interval, limit: u32) -> VenueFuture<'_, Vec<Kline>>;
+
+    /// Daily wallet-balance history since `since_ms`, oldest first.
+    ///
+    /// Venues that cannot serve history return an empty series rather than an
+    /// error, so the caller can fall back to what it has recorded locally.
+    fn equity_history(&self, since_ms: i64) -> VenueFuture<'_, EquitySeries> {
+        let _ = since_ms;
+        Box::pin(async { Ok(EquitySeries::default()) })
+    }
+
+    /// Whether observations of this account should be recorded over time.
+    ///
+    /// Real accounts accumulate history locally because the venue serves so
+    /// little of it; a fixture carries its own complete series and must not have
+    /// recordings mixed into it.
+    fn records_history(&self) -> bool {
+        true
+    }
 
     /// Whether this venue pushes updates instead of only answering requests.
     ///

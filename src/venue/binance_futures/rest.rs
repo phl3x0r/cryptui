@@ -5,8 +5,10 @@
 use crate::auth::{Query, now_ms};
 
 use super::BinanceFutures;
+use super::income;
 use super::wire;
 use super::ws;
+use crate::performance::{DAY_MS, EquitySeries};
 use crate::venue::{
     AccountSnapshot, Interval, Kline, Position, StreamEvent, Symbol, UnboundedSender, Venue,
     VenueFuture, VenueId,
@@ -14,6 +16,17 @@ use crate::venue::{
 
 /// Highest candle count the venue will return in one klines request.
 const MAX_KLINES: u32 = 1_500;
+
+/// Most income pages fetched for one equity curve.
+///
+/// Each page costs 30 weight, so a bounded fetch keeps opening the panel from
+/// spending the whole minute's budget. On this account a page covers about a
+/// week, which is far short of a year — the rest comes from local recording.
+const MAX_INCOME_PAGES: usize = 12;
+/// Records per income page: the venue's maximum.
+const INCOME_PAGE_SIZE: u32 = 1_000;
+/// The venue will not serve income older than this.
+const INCOME_HISTORY_DAYS: i64 = 90;
 
 impl Venue for BinanceFutures {
     fn id(&self) -> VenueId {
@@ -60,6 +73,52 @@ impl Venue for BinanceFutures {
                 .get_json("/fapi/v1/klines", Some(&query), false)
                 .await?;
             wire::klines(&payload, now_ms()).map_err(|detail| self.malformed(detail))
+        })
+    }
+
+    fn equity_history(&self, since_ms: i64) -> VenueFuture<'_, EquitySeries> {
+        Box::pin(async move {
+            let now = now_ms();
+            let floor = since_ms.max(now - INCOME_HISTORY_DAYS * DAY_MS);
+
+            // The current balance is the anchor everything is walked back from.
+            let account = self.get_json("/fapi/v3/account", None, true).await?;
+            let wallet_now =
+                wire::wallet_balance(&account).map_err(|detail| self.malformed(detail))?;
+
+            let mut records = Vec::new();
+            let mut end = now;
+            for _ in 0..MAX_INCOME_PAGES {
+                if end <= floor {
+                    break;
+                }
+
+                let mut query = Query::new();
+                query
+                    .push("startTime", floor.to_string())
+                    .push("endTime", end.to_string())
+                    .push("limit", INCOME_PAGE_SIZE.to_string());
+
+                let payload = self.get_json("/fapi/v1/income", Some(&query), true).await?;
+                let page = wire::income(payload).map_err(|detail| self.malformed(detail))?;
+                let Some(oldest) = page.first().map(|record| record.time_ms) else {
+                    break;
+                };
+                let full_page = page.len() >= INCOME_PAGE_SIZE as usize;
+                records.extend(page);
+
+                if !full_page {
+                    break; // the window is exhausted
+                }
+                end = oldest - 1;
+            }
+
+            tracing::debug!(
+                records = records.len(),
+                from = %floor,
+                "reconstructed the wallet history from income"
+            );
+            Ok(income::wallet_series(&records, wallet_now, now))
         })
     }
 
