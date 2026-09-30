@@ -1,23 +1,58 @@
 # cryptui
 
 A terminal UI for keeping an eye on several crypto exchange accounts at once,
-inspired by the dense, panel-based trading terminals of the desktop world.
+in the spirit of the dense, panel-based trading terminals of the desktop world.
 
-**Status: early development (v0.1 in progress).** The first release is
-deliberately **read-only** — it monitors, it does not trade yet.
+**Status: v0.1.0 — read-only.** It monitors, it does not trade. Order entry,
+the order book and additional venues are planned; the venue layer is already
+abstracted behind a trait so a new exchange does not touch UI code.
 
-Target of v0.1:
+```
+cryptui 0.1.0  ·  Fixture  ·  binance_futures                    positions ● live 0s   account ● live 0s
+SOLUSDT  15m  mark 200.0000  entry 194.5000  pnl +114.00  3 open positions
+┌ Chart  SOLUSDT · 15m MA7 201.5236  MA25 201.7533  MA99 201.5711  ● live 0s ──────────────────────────┐
+│                                            ⢀ ⡄⡄⢀                                        207.2081 │
+│                     ⢀ ⡄⢠⢠                      ⡀⢰⢀⣇⣇⣰⡀⡀          ⡆⣼⡴⡷⡗⣾⡆⡆                   │
+│      ⢰⢀⣇⣸⣸⡀⡄           ⢰⣼⡴⡷⢺⣾⣆⣆         ⡀⣧⢿⠏⠏⠇⢿⣧⣧⣄⡀    ⣾⣿⢹⠁⠁⡡⢽⢻⣿⡗⠢⡀               │
+│     ⣼⣿⠏⠏⠸⢻⣳⣷⢤⡀        ⡆⣿⢹⠁⠁⢈⠼⢺⣿⣹⠢⡀     ⢠⣧⡿⠘ ⢠⠊⠉⠘⡟⣷⢈⠢⡀  ⢠⢸⣿⡏ ⢀⠜  ⠈⢿⣿⢠⠑⢄           201.6945 │
+│   ⢠⣧⢿⠟ ⢀⠔⠉⠘⡟⣾⣎⠢⡀      ⢠⢸⣿⢹ ⢀⠔⠁  ⠇⣿⢰⠈⢢   ⣸⣸⣿⠃ ⡰⠁   ⠁⡿⣼⡄⠱⡀ ⡀⣾⡞⡟ ⡠⠊    ⠈⡏⣿⡇⡈⢢            │
+│ ⢠⣿⡇⠇ ⡜  ⣀⣀⣀⣀⠈⣿⣇⣇⠈⢆     ⣸⣿⡇⠁⣠⡣⠤⠤⠒⠒⠒⠒⠤⢿⢷⣷ ⠑⡄  ⡀⣿⣹⡡⢤⠞⠉⠉⠉    ⠉⠹⢹⣿⡤⠬⢆⣀  ⣀⣀⣾⣿⠚⠊⡝  ⣀⣀⣀⣀⠬⢼⣿⣯⠶⠷⠆      │
+│ ⣾⣿⡣⠤⡞⠊⠉⠉    ⠉⠙⢹⣿⢴⠤⢧⣀⣀⡀ ⢀⣀⣆⣿⠜⠊⡩⠃      ⠈⠸⡿⣽⠉⠙⢖⠤⠤⠤⠤⠤⠒⢲⣷⡿ ⢠⠊        ⠘⡟⣷⢀ ⢫⠉⠉⠉⠉⠛⢲⢺⣿⠟⢒⠞⠒⠒⠉⠉⠉⠉   198.7413 │
+│⣰⣸⣿⣘⣠⣊⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣻⣿⣆⣀⣈⣆⣀⣀⣀⣾⣞⣟⣀⣎⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸⣿⣇⣆⣀⣑⣄⣀⣆⣿⣇⣧⣊⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣃⣿⣧⣧⣄⣈⣒⣤⣷⣻⣣⣝⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣹⣹⣿      │
+│⡤⣤⢤⡖⡏⡇   ⢀⣀⡤⡤⣴⢲⡏⡇   ⣀⣠⢤⣤⡖⣾⢹    ⣀⡤⣤⢤⣶⡏⡇   ⢀⣀⣤⡤⣴⢲⣿    ⣀⣠⢤⣤⡖⣾⢹   ⢀⣀⡤⣤⢴⢲⡏⡇   ⢀⣠⢤⡤⣴⢲  55,000.00 │
+│09-30 10:00                      09-30 20:00                      10-01 05:45                        │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Positions (3) ──────────────────────────────────────────────────────────────────────────────────────┐
+│Symbol           Side    Size          Entry        Mark         Margin       PnL ▼                   │
+│SOLUSDT          Long            22.00     194.5000     200.0000       430.00     +114.00 (+26.5%)    │
+│ETHUSDT          Short            1.20    3,080.000    3,000.000       720.00      +96.00 (+13.3%)    │
+│BTCUSDT          Long             0.05    84,200.00    85,000.00       850.00       +40.00 (+4.7%)    │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Wallet 10,000.00  ·  Equity 10,250.00  ·  Unrealized +250.00  ·  Margin ratio 1.2%  ·  Available 8,000.00
+q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse
+h/l pan · + - zoom · f follow · [ ] interval · s symbol · a account · r refresh
+```
 
-- multiple accounts from one config file, switchable at runtime
-- sortable table of open positions with live unrealized PnL
-- symbol picker (all USDTⓈ-M perpetuals) driving the chart
-- candlestick chart with moving averages, volume subpane, interval switch, pan/zoom
-- header with mark price, funding, 24h stats and feed freshness; footer with
-  balance, equity, unrealized PnL and margin ratio
+That frame is the bundled *fixture* account, so it renders with no network and
+no credentials:
 
-Planned afterwards, not implemented yet: order entry, order book, Binance Spot,
-Bybit, and other venues (the venue layer is abstracted behind a trait so new
-exchanges do not touch UI code).
+```sh
+cryptui --account paper --dump-frame --width 110 --height 40 > frame.ans
+clear && cat frame.ans
+```
+
+## Features
+
+- **Several accounts** from one configuration file, switched at runtime with `a`.
+- **Sortable positions table** with live unrealised PnL, colour-coded and
+  sortable by symbol, side, size, entry, mark, margin or PnL.
+- **Candlestick chart** with MA(7/25/99) overlays, a volume pane, price and time
+  axes, intervals from 1m to 1d, pan, zoom and follow mode.
+- **Symbol picker** over every tradable contract, not just the ones you hold.
+- **Honest feed health**: each feed reports its age, and says why it failed
+  rather than freezing quietly.
+- **Offline fixture accounts**, so the UI can be exercised without a second live
+  account.
 
 ## Install
 
@@ -43,19 +78,94 @@ cp config.template.toml ~/.config/cryptui/config.toml
 chmod 600 ~/.config/cryptui/config.toml
 ```
 
-Then fill in your credentials. Read-only API keys are sufficient and
-recommended: enable *Reading* only, plus futures read access. CryptUI never
-needs trade permission in v0.1. Secret values may be written literally or as
-`${ENV_VAR}` references, which are resolved from the environment at load time —
-prefer the environment so the file never holds secret material.
+Then fill in your credentials:
 
-The template also defines a fixture account that serves recorded payloads
-instead of calling the network, so multi-account switching can be exercised
-offline.
+```toml
+default_account = "main"
+
+[settings]
+refresh_interval_ms   = 3000
+default_interval      = "15m"
+chart_history_candles = 500
+
+[accounts.main]
+venue      = "binance_futures"
+label      = "Main"
+api_key    = "${BINANCE_API_KEY}"      # or paste the literal key here
+api_secret = "${BINANCE_API_SECRET}"   # or paste the literal secret here
+testnet    = false
+
+[accounts.paper]
+venue   = "binance_futures"
+label   = "Fixture"
+fixture = "tests/fixtures/account_paper.json"
+```
+
+**API keys.** Read-only keys are enough and are what this release is designed
+for: enable *Reading* only, plus futures read access. CryptUI never needs trade
+permission. Prefer `${ENV_VAR}` references so the file itself holds no secret;
+if you paste literal credentials instead, the file mode is checked and a warning
+is logged when it is readable by other users.
+
+**Fixture accounts** read their positions, balances, contracts and candles from
+a JSON file instead of the network. `fixture` is resolved relative to the
+directory you run `cryptui` from. The bundled
+[`tests/fixtures/account_paper.json`](tests/fixtures/account_paper.json) is
+synthetic — never record a real account into a repository.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `q`, `Esc`, `Ctrl-C` | Quit |
+| `j` / `k`, `↓` / `↑` | Move the position selection (the chart follows it) |
+| `g` / `G` | First / last position |
+| `1` … `7` | Sort by that column; press again to reverse |
+| `,` / `.` | Cycle the sort column |
+| `R` | Reverse the sort order |
+| `h` / `l`, `←` / `→` | Pan the chart into history / back towards now |
+| `+` / `-` | Zoom the chart out / in |
+| `f` | Follow the newest candle again |
+| `[` / `]` | Longer / shorter candle interval |
+| `s` | Symbol picker (`Enter` picks, `Esc` cancels, typing filters) |
+| `a` | Switch to the next configured account |
+| `r` | Refresh now |
+
+Inside the symbol picker the global shortcuts are suspended, so `q` filters
+rather than quits.
+
+## Troubleshooting
+
+**The chart is live but the feed says `stale`.** Check `-v` output. Positions and
+balances are polled every `settings.refresh_interval_ms`; the chart tolerates
+silence up to twice its candle interval, because a quiet contract legitimately
+goes minutes without a candle update.
+
+**Nothing streams on Binance futures.** Some networks accept the WebSocket
+upgrade on `fstream.binance.com` and then never deliver market data, while the
+same host's REST API and Binance's spot stream work normally. CryptUI detects a
+stream that never delivers anything, logs `market stream stayed silent; polling
+instead`, and polls the REST API for the chart instead. PnL freshness then comes
+from the normal position poll.
+
+**`HTTP 451` or `403` from the venue.** Binance blocks some regions at the API
+level. The error is reported verbatim, including a hint that the network looks
+blocked. Use `testnet = true` or a fixture account.
+
+**`environment variable … is not set`.** A `${VAR}` reference in the config has
+no matching environment variable. Export it, or replace the reference with the
+literal value.
+
+**`account 'main' is incomplete`.** The account has neither a full credential
+pair nor a `fixture`. CryptUI refuses to start rather than run unauthenticated.
+
+**The terminal looks broken after a crash.** The terminal is restored on exit
+and on panic; if a signal killed the process, run `reset`.
 
 ## Development
 
-Install the pinned toolchain and run the same checks as CI:
+Scope, decisions and per-phase verification evidence live in `PLAN.md`, which is
+intentionally not committed.
 
 ```sh
 mise install          # Rust toolchain pinned by .mise.toml
@@ -63,6 +173,23 @@ cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
+
+Layout snapshots render into a ratatui test backend, so the UI can be checked
+without a terminal. `cargo test` covers chart arithmetic, payload mapping,
+configuration validation, key handling, the silent-stream fallback and every
+rendered panel.
+
+## Design notes
+
+- **One narrow outcome.** v0.1 answers "what do I hold, and what is it worth?"
+  Order placement, the order book and further venues are deliberately absent.
+- **The venue is a trait.** `Venue` exposes contracts, positions, balances and
+  candles; everything above it is venue-agnostic, and a second exchange only
+  needs to implement it.
+- **Secrets are a type.** Credentials live in `Secret`, whose `Debug` is
+  redacted, and a fixture test asserts no credential material reaches a log.
+- **Failures are visible.** Every feed reports its age and its last error; a
+  screen that cannot update says so.
 
 ## License
 

@@ -1,0 +1,53 @@
+# Changelog
+
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+Nothing yet.
+
+## [0.1.0] - 2026-09-30
+
+The first release: read-only monitoring of Binance USDⓈ-M futures accounts.
+
+### Added
+
+- Configuration at `~/.config/cryptui/config.toml` (or `--config`, or
+  `$CRYPTUI_CONFIG`), with `${ENV_VAR}` interpolation, several accounts, and a
+  validation pass that rejects half-configured accounts with a clear message.
+- Credentials held in a type whose `Debug` output is redacted, so a key cannot
+  reach a log line or a panic message by accident. A file holding literal
+  credentials is reported when its permissions are too open.
+- Positions table: sortable by symbol, side, size, entry, mark, margin or PnL
+  (largest winner first by default), with the active column marked, colour-coded
+  PnL, and the selected contract preserved across refreshes and re-sorts.
+- Candle chart: braille candles, MA(7/25/99) overlays, a volume pane, price and
+  time axes, interval switching (1m to 1d), pan (`h`/`l`), zoom (`+`/`-`) and a
+  follow mode that resumes at the newest candle.
+- Symbol picker (`s`) over every tradable contract, with a filter that ranks
+  name-prefix matches first. The chosen contract need not have an open position.
+- Account switching (`a`) between every configured account, including offline
+  fixture accounts that replay JSON instead of calling the network.
+- Live updates: a WebSocket subscription per chart target and per held contract.
+  Venues without streams, and streams that connect but stay silent, fall back to
+  REST polling rather than showing a frozen chart.
+- Feed health in the header and chart title: age, staleness and the reason a
+  feed failed, instead of a quietly frozen screen.
+- Headless entry points: `--print-config`, `--print symbols|positions|balances|
+  klines`, and `--dump-frame` for a single ANSI frame, so every layer can be
+  verified without a terminal.
+- 145 tests, including layout snapshots rendered into a test backend, chart
+  arithmetic, payload mapping, and the silent-stream fallback.
+
+### Notes
+
+- Read-only by construction: no order-placement code exists yet.
+- Binance's USDⓈ-M futures market-stream host accepts WebSocket upgrades and
+  then sends nothing from some networks, including the one this was developed
+  on. All futures REST endpoints and the spot stream work, so the application
+  polls instead. See the troubleshooting section of the README.
+
+[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.0
