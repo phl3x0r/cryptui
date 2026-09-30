@@ -7,6 +7,7 @@
 //!
 //! Phase 0 contains only the skeleton that the build and CI pipeline verify.
 
+pub mod auth;
 pub mod config;
 pub mod venue;
 

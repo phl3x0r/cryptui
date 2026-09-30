@@ -1,10 +1,14 @@
 //! Exchange abstraction shared by the configuration and the venue clients.
 //!
-//! Phase P1 defines the identifiers only (venue and candle interval). The
-//! `Venue` trait and the Binance USDⓈ-M futures client are added alongside it,
-//! but nothing outside this module may hard-code a venue string.
+//! Nothing outside this module may hard-code a venue string: the application
+//! talks to exchanges through [`Venue`] and the domain types defined here.
+
+pub mod binance_futures;
 
 use std::fmt;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -130,6 +134,193 @@ impl fmt::Display for IntervalParseError {
 }
 
 impl std::error::Error for IntervalParseError {}
+
+/// A tradable contract as advertised by the venue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    /// Venue symbol, for example `BTCUSDT`.
+    pub name: String,
+    /// Base asset, for example `BTC`.
+    pub base_asset: String,
+    /// Quote asset, for example `USDT`.
+    pub quote_asset: String,
+}
+
+/// One candle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Kline {
+    /// Opening time, in milliseconds since the UNIX epoch.
+    pub open_time_ms: i64,
+    /// Price at the start of the interval.
+    pub open: f64,
+    /// Highest price in the interval.
+    pub high: f64,
+    /// Lowest price in the interval.
+    pub low: f64,
+    /// Price at the end of the interval.
+    pub close: f64,
+    /// Traded contract volume.
+    pub volume: f64,
+    /// Closing time, in milliseconds since the UNIX epoch.
+    pub close_time_ms: i64,
+    /// Whether the venue has finished this candle.
+    pub closed: bool,
+}
+
+/// Direction of a position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionSide {
+    /// Long.
+    Long,
+    /// Short.
+    Short,
+}
+
+impl fmt::Display for PositionSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Long => "Long",
+            Self::Short => "Short",
+        })
+    }
+}
+
+/// An open position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Position {
+    /// Contract, for example `BTCUSDT`.
+    pub symbol: String,
+    /// Direction.
+    pub side: PositionSide,
+    /// Absolute contract quantity.
+    pub size: f64,
+    /// Average entry price.
+    pub entry_price: f64,
+    /// Current mark price.
+    pub mark_price: f64,
+    /// Unrealized profit and loss in the margin asset.
+    pub unrealized_pnl: f64,
+    /// Margin committed at the current leverage.
+    pub initial_margin: f64,
+    /// Maintenance margin the venue requires.
+    pub maintenance_margin: f64,
+    /// Position value at the mark price.
+    pub notional: f64,
+    /// Liquidation price, when the venue reports one.
+    pub liquidation_price: Option<f64>,
+}
+
+/// One asset balance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Balance {
+    /// Asset symbol, for example `USDT`.
+    pub asset: String,
+    /// Total wallet balance for this asset.
+    pub total: f64,
+    /// Amount available to trade.
+    pub available: f64,
+}
+
+/// Account totals plus per-asset balances.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountSnapshot {
+    /// Balances with a non-zero wallet balance.
+    pub balances: Vec<Balance>,
+    /// Wallet balance across all assets.
+    pub wallet_balance: f64,
+    /// Wallet balance plus unrealized profit and loss.
+    pub equity: f64,
+    /// Total unrealized profit and loss.
+    pub unrealized_pnl: f64,
+    /// Funds available to open new positions.
+    pub available_balance: f64,
+    /// Initial margin currently committed.
+    pub initial_margin: f64,
+    /// Maintenance margin currently required.
+    pub maintenance_margin: f64,
+}
+
+/// A boxed future, so [`Venue`] stays object-safe while other venues are added.
+pub type VenueFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, VenueError>> + Send + 'a>>;
+
+/// Everything that can go wrong while talking to a venue.
+#[derive(Debug, thiserror::Error)]
+pub enum VenueError {
+    /// The request never produced a response.
+    #[error("network error talking to {venue}: {source}")]
+    Network {
+        /// Venue that was contacted.
+        venue: VenueId,
+        /// Underlying transport failure.
+        #[source]
+        source: reqwest::Error,
+    },
+
+    /// The venue answered with a non-success status and no structured error.
+    #[error("{venue} returned HTTP {status}: {detail}")]
+    Http {
+        /// Venue that was contacted.
+        venue: VenueId,
+        /// HTTP status code.
+        status: u16,
+        /// Short excerpt of the response body.
+        detail: String,
+    },
+
+    /// The venue rejected the request with its own error code.
+    #[error("{venue} rejected the request: code {code}, {message}")]
+    Api {
+        /// Venue that was contacted.
+        venue: VenueId,
+        /// Venue-specific error code.
+        code: i64,
+        /// Venue-provided explanation.
+        message: String,
+    },
+
+    /// The response did not have the expected shape.
+    #[error("{venue} returned an unexpected payload: {detail}")]
+    Malformed {
+        /// Venue that was contacted.
+        venue: VenueId,
+        /// What was wrong with the payload.
+        detail: String,
+    },
+
+    /// The account cannot be used for live calls.
+    #[error("cannot use this account: {0}")]
+    Credentials(String),
+
+    /// Offline fixture accounts are not wired up yet.
+    #[error("fixture accounts are not supported yet (would read {path})")]
+    FixtureUnsupported {
+        /// Fixture the account points at.
+        path: PathBuf,
+    },
+}
+
+/// What the application needs from an exchange.
+///
+/// Implementations are read-only in v0.1; order entry is deliberately absent.
+pub trait Venue: Send + Sync {
+    /// Which exchange this client talks to.
+    fn id(&self) -> VenueId;
+
+    /// Prepare the connection: synchronise clocks, validate credentials.
+    fn sync(&self) -> VenueFuture<'_, ()>;
+
+    /// Tradable contracts, ordered by symbol.
+    fn symbols(&self) -> VenueFuture<'_, Vec<Symbol>>;
+
+    /// Open positions, flat contracts omitted, ordered by symbol.
+    fn positions(&self) -> VenueFuture<'_, Vec<Position>>;
+
+    /// Balances and account totals.
+    fn account(&self) -> VenueFuture<'_, AccountSnapshot>;
+
+    /// The most recent `limit` candles for `symbol`, oldest first.
+    fn klines(&self, symbol: &str, interval: Interval, limit: u32) -> VenueFuture<'_, Vec<Kline>>;
+}
 
 #[cfg(test)]
 mod tests {

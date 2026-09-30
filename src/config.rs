@@ -98,6 +98,14 @@ impl fmt::Debug for Secret {
     }
 }
 
+#[cfg(test)]
+impl Secret {
+    /// Build a secret from a literal, for tests that need a known value.
+    pub(crate) fn from_test_value(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 /// How an account obtains its data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountMode {
