@@ -7,8 +7,11 @@
 //!
 //! Phase 0 contains only the skeleton that the build and CI pipeline verify.
 
+pub mod app;
 pub mod auth;
 pub mod config;
+pub mod state;
+pub mod ui;
 pub mod venue;
 
 /// Semantic version of the running binary, as reported by `--version`.
