@@ -3,7 +3,7 @@
 A terminal UI for keeping an eye on several crypto exchange accounts at once,
 in the spirit of the dense, panel-based trading terminals of the desktop world.
 
-**Status: v0.1.1 — read-only.** It monitors, it does not trade. Order entry,
+**Status: v0.1.2 — read-only.** It monitors, it does not trade. Order entry,
 the order book and additional venues are planned; the venue layer is already
 abstracted behind a trait so a new exchange does not touch UI code.
 

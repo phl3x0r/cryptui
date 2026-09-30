@@ -37,7 +37,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(market_line(app)), rows[1]);
 }
 
-/// `cryptui 0.1.1 · main · binance_futures`
+/// `cryptui 0.1.2 · main · binance_futures`
 fn identity_line(app: &App) -> Line<'static> {
     Line::from(vec![
         Span::styled(

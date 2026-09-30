@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-30
+
 ### Added
 
 - Account performance panel (`e`): a full-screen view of the equity curve and the
@@ -123,6 +125,7 @@ The first release: read-only monitoring of Binance USDⓈ-M futures accounts.
   on. All futures REST endpoints and the spot stream work, so the application
   polls instead. See the troubleshooting section of the README.
 
-[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.2
 [0.1.1]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.0
