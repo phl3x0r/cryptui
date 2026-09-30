@@ -112,10 +112,16 @@ async fn connect<T>(
     while let Some(message) = socket.next().await {
         match message.map_err(|error| error.to_string())? {
             Message::Text(text) => {
-                if let Some(value) = parse(&text)
-                    && updates.send(StreamEvent::Data(value)).is_err()
-                {
-                    return Ok(()); // the receiver is gone
+                tracing::trace!(bytes = text.len(), "stream frame received");
+                match parse(&text) {
+                    Some(value) => {
+                        if updates.send(StreamEvent::Data(value)).is_err() {
+                            return Ok(()); // the receiver is gone
+                        }
+                    }
+                    // A venue that answers with an error frame, or a stream we
+                    // did not ask for, must not look like silence.
+                    None => tracing::debug!(%text, "ignoring unrecognised stream message"),
                 }
             }
             Message::Ping(payload) => {
@@ -126,8 +132,11 @@ async fn connect<T>(
                     .await
                     .map_err(|error| error.to_string())?;
             }
-            Message::Close(_) => return Ok(()),
-            _ => {}
+            Message::Close(frame) => {
+                tracing::debug!(?frame, "stream closed by the venue");
+                return Ok(());
+            }
+            other => tracing::trace!(?other, "ignoring non-text stream frame"),
         }
     }
 

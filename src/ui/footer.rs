@@ -11,7 +11,7 @@ use crate::state::App;
 use super::{format, theme};
 
 /// Key hints, kept in one place so they cannot drift from the key handler.
-const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · h/l pan · + - zoom · f follow · [ ] interval · r refresh";
+const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · h/l pan · + - zoom · f follow · [ ] interval · s symbol · r refresh";
 
 /// Draw the footer.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {

@@ -23,6 +23,13 @@ use crate::venue::{Interval, StreamEvent, Venue, VenueId};
 
 /// How long the loop waits for a key before redrawing and draining updates.
 const TICK: Duration = Duration::from_millis(200);
+/// How long a freshly subscribed stream may stay silent before it is abandoned.
+///
+/// Some networks accept the WebSocket upgrade and then never deliver market
+/// data (observed on Binance's USDⓈ-M futures stream host). Rather than showing
+/// a frozen chart, fall back to polling.
+const STREAM_SILENCE_LIMIT: Duration = Duration::from_secs(15);
+
 /// How long a chart target must stay unchanged before its data is fetched.
 ///
 /// Scrolling the positions table changes the target on every key press; without
@@ -70,6 +77,7 @@ pub fn run(venue: Box<dyn Venue>, options: RunOptions) -> io::Result<()> {
     ));
 
     let mut chart = ChartFeed::default();
+    let mut symbols = SymbolsFeed::default();
     chart.sync(&mut app, &venue, &options, &updates_tx);
 
     let _guard = TerminalGuard::enter()?;
@@ -79,12 +87,14 @@ pub fn run(venue: Box<dyn Venue>, options: RunOptions) -> io::Result<()> {
         terminal.draw(|frame| ui::render(frame, &app))?;
         drain(&mut updates_rx, &mut app);
         chart.sync(&mut app, &venue, &options, &updates_tx);
+        symbols.sync(&app, &venue, &updates_tx);
 
         if event::poll(TICK)? {
             match event::read()? {
                 Event::Key(key) => {
                     handle_key(key, &mut app, &refresh_tx);
                     chart.sync(&mut app, &venue, &options, &updates_tx);
+                    symbols.sync(&app, &venue, &updates_tx);
                 }
                 // The next draw picks up the new size from the backend.
                 Event::Resize(_, _) => {}
@@ -114,8 +124,14 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
         return;
     }
 
+    if app.picker_is_open() {
+        handle_picker_key(key, app);
+        return;
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
+        KeyCode::Char('s') => app.open_picker(),
         KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
         KeyCode::Char('g') => app.select_first(),
@@ -142,6 +158,65 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
             }
         }
         _ => {}
+    }
+}
+
+/// Translate a key press while the symbol picker is open.
+///
+/// Everything printable goes into the filter, so the global shortcuts are
+/// deliberately suspended: `q` types a `q` instead of quitting.
+fn handle_picker_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Esc => app.close_picker(),
+        KeyCode::Enter => {
+            app.picker_confirm();
+        }
+        KeyCode::Backspace => app.picker_backspace(),
+        KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => app.picker_move(-1),
+        KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => app.picker_move(1),
+        KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.picker_push(character);
+        }
+        _ => {}
+    }
+}
+
+/// Fetches the tradable-contract list the first time the picker needs it.
+#[derive(Default)]
+struct SymbolsFeed {
+    loading: bool,
+    last_attempt: Option<std::time::Instant>,
+}
+
+impl SymbolsFeed {
+    /// How long to wait before retrying a failed contract-list fetch.
+    const RETRY_AFTER: Duration = Duration::from_secs(15);
+
+    fn sync(&mut self, app: &App, venue: &Arc<dyn Venue>, updates: &mpsc::Sender<Update>) {
+        if !app.picker_needs_symbols() || self.loading {
+            return;
+        }
+        // A failed attempt must not turn into a request loop.
+        if let Some(attempt) = self.last_attempt
+            && attempt.elapsed() < Self::RETRY_AFTER
+        {
+            return;
+        }
+
+        self.loading = true;
+        self.last_attempt = Some(std::time::Instant::now());
+        let venue = Arc::clone(venue);
+        let updates = updates.clone();
+        tokio::spawn(async move {
+            let update = match venue.symbols().await {
+                Ok(symbols) => Update::Symbols(symbols),
+                Err(error) => Update::Failed {
+                    feed: Feed::Symbols,
+                    message: error.to_string(),
+                },
+            };
+            let _ = updates.send(update).await;
+        });
     }
 }
 
@@ -202,6 +277,7 @@ impl ChartFeed {
             interval,
             options.chart_history,
             Duration::from_millis(options.refresh_interval_ms.max(250)),
+            STREAM_SILENCE_LIMIT,
             updates.clone(),
         )));
     }
@@ -225,6 +301,7 @@ async fn chart_feed(
     interval: Interval,
     history: u32,
     refresh: Duration,
+    silence_limit: Duration,
     updates: mpsc::Sender<Update>,
 ) {
     match venue.klines(&symbol, interval, history).await {
@@ -256,27 +333,54 @@ async fn chart_feed(
 
     let (klines_tx, mut klines_rx) = mpsc::unbounded_channel();
     let streaming = Arc::clone(&venue);
+    let streamed_symbol = symbol.clone();
     let stream = tokio::spawn(async move {
-        if let Err(error) = streaming.follow_klines(&symbol, interval, klines_tx).await {
+        if let Err(error) = streaming
+            .follow_klines(&streamed_symbol, interval, klines_tx)
+            .await
+        {
             tracing::warn!(%error, "kline stream stopped");
         }
     });
 
-    while let Some(event) = klines_rx.recv().await {
-        let update = match event {
-            StreamEvent::Data(kline) => Update::Kline(kline),
-            // Surfaced rather than swallowed: a socket that keeps dropping must
-            // be visible, not merely quiet.
-            StreamEvent::Disconnected(message) => Update::Failed {
-                feed: Feed::Chart,
-                message,
-            },
-        };
-        if updates.send(update).await.is_err() {
-            break;
+    let mut silence = tokio::time::interval(silence_limit);
+    silence.tick().await; // the first tick fires immediately
+    let mut delivered = false;
+
+    loop {
+        tokio::select! {
+            event = klines_rx.recv() => {
+                let Some(event) = event else { break };
+                delivered = true;
+                let update = match event {
+                    StreamEvent::Data(kline) => Update::Kline(kline),
+                    // Surfaced rather than swallowed: a socket that keeps
+                    // dropping must be visible, not merely quiet.
+                    StreamEvent::Disconnected(message) => Update::Failed {
+                        feed: Feed::Chart,
+                        message,
+                    },
+                };
+                if updates.send(update).await.is_err() {
+                    stream.abort();
+                    return;
+                }
+            }
+            _ = silence.tick() => {
+                // Once data has flowed, silence is normal on a quiet contract;
+                // only a stream that never delivered anything is abandoned.
+                if !delivered {
+                    tracing::warn!("market stream stayed silent; polling instead");
+                    break;
+                }
+            }
         }
     }
     stream.abort();
+
+    if !delivered {
+        poll_klines(&venue, &symbol, interval, refresh, &updates).await;
+    }
 }
 
 /// Follow the forming candle by polling, for venues without streams.
@@ -404,6 +508,10 @@ mod tests {
     use crate::venue::{Interval, PositionSide, VenueId};
 
     use super::handle_key;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::venue::Venue;
 
     fn app() -> App {
         let mut app = App::new(
@@ -526,6 +634,62 @@ mod tests {
     }
 
     #[test]
+    fn s_opens_the_picker_and_redirects_the_keys() {
+        let (refresh, _rx) = mpsc::channel(1);
+        let mut app = app();
+
+        press(&mut app, KeyCode::Char('s'), &refresh);
+        assert!(app.picker_is_open(), "s opens the picker");
+
+        press(&mut app, KeyCode::Char('q'), &refresh);
+        assert!(!app.should_quit(), "q is a filter character while picking");
+        assert_eq!(app.picker_state().map(|p| p.query.as_str()), Some("Q"));
+
+        press(&mut app, KeyCode::Backspace, &refresh);
+        assert_eq!(app.picker_state().map(|p| p.query.as_str()), Some(""));
+
+        press(&mut app, KeyCode::Esc, &refresh);
+        assert!(!app.picker_is_open(), "escape closes it");
+        assert_eq!(app.selected, 0, "the table selection is untouched");
+    }
+
+    #[test]
+    fn picker_navigation_and_confirmation_work_from_the_keyboard() {
+        use crate::state::Update;
+        use crate::venue::Symbol;
+
+        let (refresh, _rx) = mpsc::channel(1);
+        let mut app = app();
+        app.apply(Update::Symbols(vec![
+            Symbol {
+                name: "BTCUSDT".to_owned(),
+                base_asset: "BTC".to_owned(),
+                quote_asset: "USDT".to_owned(),
+            },
+            Symbol {
+                name: "ETHUSDT".to_owned(),
+                base_asset: "ETH".to_owned(),
+                quote_asset: "USDT".to_owned(),
+            },
+        ]));
+
+        press(&mut app, KeyCode::Char('s'), &refresh);
+        press(&mut app, KeyCode::Char('e'), &refresh);
+        assert_eq!(
+            app.picker_selected_symbol().map(|s| s.name.as_str()),
+            Some("ETHUSDT")
+        );
+
+        press(&mut app, KeyCode::Enter, &refresh);
+        assert!(!app.picker_is_open(), "confirming closes the picker");
+        assert_eq!(
+            app.effective_symbol(),
+            Some("ETHUSDT"),
+            "chart target moves"
+        );
+    }
+
+    #[test]
     fn key_releases_are_ignored() {
         let (refresh, _rx) = mpsc::channel(1);
         let mut app = app();
@@ -540,6 +704,117 @@ mod tests {
             &refresh,
         );
         assert_eq!(app.selected, 0, "a key release is not a key press");
+    }
+
+    /// A venue whose stream connects and then never delivers anything, which is
+    /// what Binance's futures stream host does from some networks.
+    struct SilentStreamVenue;
+
+    fn test_candle(index: i64) -> crate::venue::Kline {
+        crate::venue::Kline {
+            open_time_ms: 1_790_726_400_000 + index * 900_000,
+            open: 100.0 + index as f64,
+            high: 101.0 + index as f64,
+            low: 99.0 + index as f64,
+            close: 100.5 + index as f64,
+            volume: 10.0,
+            close_time_ms: 1_790_726_400_000 + (index + 1) * 900_000 - 1,
+            closed: true,
+        }
+    }
+
+    impl Venue for SilentStreamVenue {
+        fn id(&self) -> VenueId {
+            VenueId::BinanceFutures
+        }
+
+        fn sync(&self) -> crate::venue::VenueFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn symbols(&self) -> crate::venue::VenueFuture<'_, Vec<crate::venue::Symbol>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn positions(&self) -> crate::venue::VenueFuture<'_, Vec<crate::venue::Position>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn account(&self) -> crate::venue::VenueFuture<'_, crate::venue::AccountSnapshot> {
+            Box::pin(async {
+                Ok(crate::venue::AccountSnapshot {
+                    balances: Vec::new(),
+                    wallet_balance: 0.0,
+                    equity: 0.0,
+                    unrealized_pnl: 0.0,
+                    available_balance: 0.0,
+                    initial_margin: 0.0,
+                    maintenance_margin: 0.0,
+                })
+            })
+        }
+
+        fn klines(
+            &self,
+            _symbol: &str,
+            _interval: Interval,
+            limit: u32,
+        ) -> crate::venue::VenueFuture<'_, Vec<crate::venue::Kline>> {
+            Box::pin(async move { Ok((0..i64::from(limit.min(2))).map(test_candle).collect()) })
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        fn follow_klines(
+            &self,
+            _symbol: &str,
+            _interval: Interval,
+            _updates: crate::venue::UnboundedSender<crate::venue::StreamEvent<crate::venue::Kline>>,
+        ) -> crate::venue::VenueFuture<'_, ()> {
+            // Subscription accepted, then nothing, forever.
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_silent_stream_falls_back_to_polling() {
+        let venue: Arc<dyn Venue> = Arc::new(SilentStreamVenue);
+        let (updates, mut received) = mpsc::channel(8);
+        let feed = tokio::spawn(super::chart_feed(
+            venue,
+            "BTCUSDT".to_owned(),
+            Interval::M15,
+            10,
+            Duration::from_millis(30),
+            Duration::from_millis(60),
+            updates,
+        ));
+
+        let mut saw_history = false;
+        let mut saw_polled_candle = false;
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(update) = received.recv().await {
+                match update {
+                    crate::state::Update::History { .. } => saw_history = true,
+                    crate::state::Update::Kline(_) if saw_history => {
+                        saw_polled_candle = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+
+        assert!(outcome.is_ok(), "the fallback must deliver candles");
+        assert!(saw_history, "history is fetched before anything else");
+        assert!(
+            saw_polled_candle,
+            "a silent stream must not leave the chart frozen"
+        );
+        feed.abort();
     }
 
     #[test]

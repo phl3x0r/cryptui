@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 
 use crate::auth::now_ms;
 use crate::chart::{MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
-use crate::venue::{AccountSnapshot, Interval, Kline, Position, PositionSide, VenueId};
+use crate::venue::{AccountSnapshot, Interval, Kline, Position, PositionSide, Symbol, VenueId};
 
 /// A column of the positions table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +135,8 @@ pub enum Feed {
     Account,
     /// Candles for the focused symbol.
     Chart,
+    /// The tradable-contract list used by the symbol picker.
+    Symbols,
 }
 
 impl Feed {
@@ -144,6 +146,7 @@ impl Feed {
             Self::Positions => "positions",
             Self::Account => "account",
             Self::Chart => "chart",
+            Self::Symbols => "symbols",
         }
     }
 }
@@ -219,6 +222,8 @@ pub enum Update {
     },
     /// One candle of the live series: either the forming candle or a new one.
     Kline(Kline),
+    /// The venue's tradable contracts, for the symbol picker.
+    Symbols(Vec<Symbol>),
     /// A feed failed; the previous data stays on screen.
     Failed {
         /// Which feed failed.
@@ -400,6 +405,13 @@ impl Chart {
     }
 }
 
+/// The symbol picker overlay: a filter query plus the highlighted row.
+#[derive(Debug, Default)]
+pub struct PickerState {
+    pub(crate) query: String,
+    pub(crate) selected: usize,
+}
+
 /// All state the UI renders from.
 pub struct App {
     pub(crate) account_label: String,
@@ -407,6 +419,11 @@ pub struct App {
     pub(crate) chart: Chart,
     /// Symbol chosen from the picker, which overrides the table selection.
     pub(crate) chart_override: Option<String>,
+    /// Tradeable contracts, cached for the picker.
+    pub(crate) symbols: Vec<Symbol>,
+    pub(crate) symbols_feed: FeedStatus,
+    /// Open symbol picker, if any.
+    pub(crate) picker: Option<PickerState>,
     pub(crate) positions: Vec<Position>,
     pub(crate) sort: Sort,
     pub(crate) selected: usize,
@@ -435,6 +452,9 @@ impl App {
             venue,
             chart: Chart::new(interval),
             chart_override: None,
+            symbols: Vec::new(),
+            symbols_feed: FeedStatus::default(),
+            picker: None,
             positions: Vec::new(),
             sort: Sort::by_pnl_descending(),
             selected: 0,
@@ -477,11 +497,20 @@ impl App {
                 self.chart.upsert(kline);
                 self.chart.feed.mark_success(now);
             }
+            Update::Symbols(symbols) => {
+                tracing::debug!(count = symbols.len(), "tradable contracts loaded");
+                self.symbols = symbols;
+                if let Some(picker) = &mut self.picker {
+                    picker.selected = 0;
+                }
+                self.symbols_feed.mark_success(now);
+            }
             Update::Failed { feed, message } => {
                 let status = match feed {
                     Feed::Positions => &mut self.positions_feed,
                     Feed::Account => &mut self.account_feed,
                     Feed::Chart => &mut self.chart.feed,
+                    Feed::Symbols => &mut self.symbols_feed,
                 };
                 status.mark_failure(message);
             }
@@ -653,6 +682,107 @@ impl App {
         let interval = self.chart.interval;
         self.chart_override = Some(symbol.clone());
         self.chart.reset(symbol, interval);
+    }
+
+    /// Open the symbol picker.
+    pub fn open_picker(&mut self) {
+        self.picker = Some(PickerState::default());
+    }
+
+    /// Close the symbol picker without choosing anything.
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    /// Whether the picker is open.
+    pub fn picker_is_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    /// Hidden query and highlighted row, for the UI.
+    pub fn picker_state(&self) -> Option<&PickerState> {
+        self.picker.as_ref()
+    }
+
+    /// Whether the contract list still has to be fetched for the picker.
+    pub fn picker_needs_symbols(&self) -> bool {
+        self.picker.is_some() && self.symbols.is_empty()
+    }
+
+    /// Contracts matching the current query.
+    ///
+    /// Name-prefix matches rank above mid-name matches, which is what someone
+    /// typing `btc` expects to see first.
+    pub fn picker_matches(&self) -> Vec<&Symbol> {
+        let query = self
+            .picker
+            .as_ref()
+            .map(|picker| picker.query.trim().to_uppercase())
+            .unwrap_or_default();
+
+        let mut matches: Vec<&Symbol> = self
+            .symbols
+            .iter()
+            .filter(|symbol| query.is_empty() || symbol.name.contains(&query))
+            .collect();
+
+        if !query.is_empty() {
+            matches.sort_by_key(|symbol| (!symbol.name.starts_with(&query), symbol.name.clone()));
+        }
+        matches
+    }
+
+    /// Append a character to the filter query.
+    pub fn picker_push(&mut self, character: char) {
+        if let Some(picker) = &mut self.picker {
+            picker.query.push(character.to_ascii_uppercase());
+            picker.selected = 0;
+        }
+    }
+
+    /// Remove the last character of the filter query.
+    pub fn picker_backspace(&mut self) {
+        if let Some(picker) = &mut self.picker {
+            picker.query.pop();
+            picker.selected = 0;
+        }
+    }
+
+    /// Move the highlight, stopping at both ends.
+    pub fn picker_move(&mut self, delta: isize) {
+        let count = self.picker_matches().len();
+        if count == 0 {
+            return;
+        }
+        if let Some(picker) = &mut self.picker {
+            let last = count - 1;
+            let current = picker.selected.min(last) as isize;
+            picker.selected = current.saturating_add(delta).clamp(0, last as isize) as usize;
+        }
+    }
+
+    /// Choose the highlighted contract, point the chart at it, and close.
+    ///
+    /// Returns the symbol, or `None` when nothing matched — in which case the
+    /// picker stays open so the query can be corrected.
+    pub fn picker_confirm(&mut self) -> Option<String> {
+        let symbol = {
+            let matches = self.picker_matches();
+            let selected = self.picker.as_ref().map_or(0, |picker| picker.selected);
+            matches.get(selected).map(|symbol| symbol.name.clone())
+        };
+
+        if let Some(symbol) = &symbol {
+            self.chart_override = Some(symbol.clone());
+            self.picker = None;
+        }
+        symbol
+    }
+
+    /// Symbol highlighted in the picker, for the UI.
+    pub fn picker_selected_symbol(&self) -> Option<&Symbol> {
+        let selected = self.picker.as_ref().map_or(0, |picker| picker.selected);
+        self.picker_matches().get(selected).copied()
     }
 
     /// Pan the chart window, leaving follow mode when stepping into history.
@@ -833,6 +963,148 @@ mod tests {
         assert_eq!(app.effective_symbol(), Some("AAAUSDT"));
         app.move_selection(1);
         assert_eq!(app.effective_symbol(), Some("BBBUSDT"));
+    }
+
+    fn symbol(name: &str) -> crate::venue::Symbol {
+        crate::venue::Symbol {
+            name: name.to_owned(),
+            base_asset: name.trim_end_matches("USDT").to_owned(),
+            quote_asset: "USDT".to_owned(),
+        }
+    }
+
+    fn picker_app() -> App {
+        let mut app = App::new(
+            "main".to_owned(),
+            VenueId::BinanceFutures,
+            Interval::M15,
+            3_000,
+        );
+        app.apply(Update::Symbols(vec![
+            symbol("BTCUSDT"),
+            symbol("ETHUSDT"),
+            symbol("WBTCUSDT"),
+            symbol("1000BONKUSDT"),
+        ]));
+        app.open_picker();
+        app
+    }
+
+    #[test]
+    fn the_picker_filters_and_ranks_prefix_matches_first() {
+        let mut app = picker_app();
+        assert_eq!(
+            app.picker_matches().len(),
+            4,
+            "an empty query lists everything"
+        );
+
+        for character in "btc".chars() {
+            app.picker_push(character);
+        }
+        let names: Vec<&str> = app
+            .picker_matches()
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["BTCUSDT", "WBTCUSDT"],
+            "the prefix match comes before the mid-name match"
+        );
+        assert_eq!(app.picker_state().map(|p| p.query.as_str()), Some("BTC"));
+    }
+
+    #[test]
+    fn backspace_widens_the_filter_again() {
+        let mut app = picker_app();
+        app.picker_push('z');
+        assert!(app.picker_matches().is_empty(), "no contract contains Z");
+
+        app.picker_backspace();
+        assert_eq!(app.picker_matches().len(), 4);
+    }
+
+    #[test]
+    fn picker_selection_stops_at_both_ends() {
+        let mut app = picker_app();
+        assert_eq!(
+            app.picker_selected_symbol().map(|s| s.name.as_str()),
+            Some("BTCUSDT")
+        );
+
+        app.picker_move(-5);
+        assert_eq!(
+            app.picker_selected_symbol().map(|s| s.name.as_str()),
+            Some("BTCUSDT")
+        );
+        app.picker_move(99);
+        assert_eq!(
+            app.picker_selected_symbol().map(|s| s.name.as_str()),
+            Some("1000BONKUSDT"),
+            "the last match is the end of the list"
+        );
+    }
+
+    #[test]
+    fn typing_resets_the_highlight_to_the_best_match() {
+        let mut app = picker_app();
+        app.picker_move(3);
+        app.picker_push('e');
+        assert_eq!(
+            app.picker_selected_symbol().map(|s| s.name.as_str()),
+            Some("ETHUSDT")
+        );
+    }
+
+    #[test]
+    fn confirming_points_the_chart_at_the_chosen_contract() {
+        let mut app = picker_app();
+        for character in "wbtc".chars() {
+            app.picker_push(character);
+        }
+
+        let chosen = app.picker_confirm();
+        assert_eq!(chosen.as_deref(), Some("WBTCUSDT"));
+        assert!(!app.picker_is_open(), "choosing closes the picker");
+        assert_eq!(app.effective_symbol(), Some("WBTCUSDT"), "chart follows it");
+    }
+
+    #[test]
+    fn confirming_with_no_match_keeps_the_picker_open() {
+        let mut app = picker_app();
+        app.picker_push('z');
+
+        assert_eq!(app.picker_confirm(), None);
+        assert!(app.picker_is_open(), "the query can still be corrected");
+        assert_eq!(app.effective_symbol(), None, "the chart is left alone");
+    }
+
+    #[test]
+    fn opening_the_picker_asks_for_the_contract_list_only_when_missing() {
+        let mut app = App::new(
+            "main".to_owned(),
+            VenueId::BinanceFutures,
+            Interval::M15,
+            3_000,
+        );
+        app.open_picker();
+        assert!(app.picker_needs_symbols(), "nothing cached yet");
+
+        app.apply(Update::Symbols(vec![symbol("BTCUSDT")]));
+        assert!(!app.picker_needs_symbols());
+        assert!(
+            app.symbols_feed.last_error.is_none(),
+            "the fetch is recorded"
+        );
+    }
+
+    #[test]
+    fn closing_the_picker_leaves_the_chart_alone() {
+        let mut app = picker_app();
+        app.close_picker();
+        assert!(!app.picker_is_open());
+        assert_eq!(app.effective_symbol(), None);
     }
 
     #[test]
