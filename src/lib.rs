@@ -7,6 +7,9 @@
 //!
 //! Phase 0 contains only the skeleton that the build and CI pipeline verify.
 
+pub mod config;
+pub mod venue;
+
 /// Semantic version of the running binary, as reported by `--version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
