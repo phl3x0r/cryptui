@@ -1350,10 +1350,7 @@ mod tests {
         assert_eq!((low, high), (97.0, 101.0), "the entry is included");
 
         // Far below: the candles win, and the line simply falls outside.
-        let (low, high) = app
-            .chart
-            .price_bounds_with(Some(1.0), 3.0)
-            .expect("bounds");
+        let (low, high) = app.chart.price_bounds_with(Some(1.0), 3.0).expect("bounds");
         assert_eq!((low, high), (99.0, 101.0), "an extreme entry is ignored");
 
         // No entry at all.
