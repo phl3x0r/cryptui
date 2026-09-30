@@ -37,7 +37,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(market_line(app)), rows[1]);
 }
 
-/// `cryptui 0.1.0 · main · binance_futures`
+/// `cryptui 0.1.1 · main · binance_futures`
 fn identity_line(app: &App) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -150,7 +150,13 @@ mod tests {
     fn identity_and_market_lines_carry_the_essentials() {
         let lines = frame_lines(&sample_app(), 120, 40);
 
-        assert!(lines[0].contains("cryptui 0.1.0"));
+        // Taken from the crate rather than written out, so a version bump
+        // cannot break this test.
+        assert!(
+            lines[0].contains(&format!("cryptui {}", crate::VERSION)),
+            "line 1: {}",
+            lines[0]
+        );
         assert!(lines[0].contains("main"));
         assert!(lines[0].contains("binance_futures"));
         assert!(lines[1].contains("BTCUSDT"), "chart symbol: {}", lines[1]);
