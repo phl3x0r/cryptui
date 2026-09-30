@@ -47,6 +47,8 @@ clear && cat frame.ans
 - **Offline fixture accounts**, so the UI can be exercised without a second live
   account.
 
+![cryptui's performance panel on the fixture account: a performance index curve over seven months with a diamond marking the one deposit, above a grid of figures — total return, CAGR, volatility, Sharpe, Sortino, max drawdown, Calmar, win rate, best and worst day — and a coverage line naming what the window holds](docs/performance.png)
+
 ## Install
 
 Requires Rust 1.85 or newer.
