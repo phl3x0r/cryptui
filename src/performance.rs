@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// How much history a view covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Window {
     /// The last month.
     Month,
@@ -27,7 +27,8 @@ pub enum Window {
     Quarter,
     /// The last year.
     Year,
-    /// Everything available.
+    /// Everything available, which is what the panel opens on.
+    #[default]
     All,
 }
 

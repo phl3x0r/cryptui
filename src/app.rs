@@ -17,7 +17,10 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::accounts::AccountHandle;
+use crate::auth::now_ms;
 use crate::chart::Viewport;
+use crate::history;
+use crate::performance::Window;
 use crate::state::{App, Feed, SortColumn, Update};
 use crate::ui;
 use crate::venue::{Interval, StreamEvent, Venue};
@@ -50,6 +53,8 @@ pub struct RunOptions {
     pub refresh_interval_ms: u64,
     /// How many historical candles to load for the chart.
     pub chart_history: u32,
+    /// How far back to ask the venue for performance history.
+    pub history_days: i64,
 }
 
 /// Run the interactive UI until the user quits.
@@ -135,6 +140,37 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
         return;
     }
 
+    // The performance panel is informational, so only the keys it needs are
+    // captured: window selection and closing it. Everything else still works.
+    if app.performance_is_open() {
+        let window = match key.code {
+            KeyCode::Char('1') => Some(Window::Month),
+            KeyCode::Char('2') => Some(Window::Quarter),
+            KeyCode::Char('3') => Some(Window::Year),
+            KeyCode::Char('4') => Some(Window::All),
+            _ => None,
+        };
+        if let Some(window) = window {
+            app.set_performance_window(window);
+            return;
+        }
+        match key.code {
+            KeyCode::Char('[') => {
+                app.cycle_performance_window(false);
+                return;
+            }
+            KeyCode::Char(']') => {
+                app.cycle_performance_window(true);
+                return;
+            }
+            KeyCode::Esc | KeyCode::Char('e') => {
+                app.close_performance();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
         KeyCode::Char('s') => app.open_picker(),
@@ -155,6 +191,7 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
         KeyCode::Char('f') => app.follow_chart(),
         KeyCode::Char('m') => app.toggle_averages(),
         KeyCode::Char('n') => app.toggle_size_units(),
+        KeyCode::Char('e') => app.toggle_performance(),
         KeyCode::Char('p') => app.toggle_entry_line(),
         KeyCode::Char('r') => {
             // A full queue already means a refresh is pending.
@@ -236,12 +273,16 @@ impl SymbolsFeed {
 /// they live behind one owner rather than as loose tasks.
 #[derive(Default)]
 struct Feeds {
+    /// Configuration name of the active account: the history is per account, and
+    /// the name is what the store is keyed by.
+    account: String,
     venue: Option<Arc<dyn Venue>>,
     poller: Option<tokio::task::JoinHandle<()>>,
     marks: Option<tokio::task::JoinHandle<()>>,
     mark_symbols: Vec<String>,
     chart: ChartFeed,
     symbols: SymbolsFeed,
+    performance: PerformanceFeed,
 }
 
 impl Feeds {
@@ -255,6 +296,7 @@ impl Feeds {
         updates: &mpsc::Sender<Update>,
     ) -> mpsc::Sender<()> {
         self.stop();
+        self.account = handle.name().to_owned();
         app.begin_account(handle.label().to_owned(), handle.venue());
 
         let (refresh_tx, refresh_rx) = mpsc::channel(1);
@@ -303,6 +345,12 @@ impl Feeds {
         self.chart.sync(app, &venue, options, updates);
         self.symbols.sync(app, &venue, updates);
         self.sync_marks(app, &venue, updates);
+
+        if app.take_history_request() {
+            self.performance
+                .fetch(&venue, &self.account, app, options, updates);
+        }
+        self.performance.record(&venue, &self.account, app);
     }
 
     /// Subscribe to mark prices for exactly the contracts the account holds.
@@ -357,6 +405,7 @@ impl Feeds {
 
     /// Stop every task.
     fn stop(&mut self) {
+        self.performance = PerformanceFeed::default();
         if let Some(task) = self.poller.take() {
             task.abort();
         }
@@ -373,6 +422,91 @@ impl Feeds {
 impl Drop for Feeds {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Fetches the account's history when the panel asks, and records today's
+/// balance as it is observed.
+///
+/// The venue serves only a few months of income, so a long window exists because
+/// every run adds today's point to the local store.
+#[derive(Default)]
+struct PerformanceFeed {
+    fetching: bool,
+    last_fetch: Option<std::time::Instant>,
+    last_record: Option<std::time::Instant>,
+}
+
+impl PerformanceFeed {
+    /// How long a fetched history is considered fresh.
+    const FRESH_FOR: Duration = Duration::from_secs(3_600);
+    /// How often an observed balance is written to the store.
+    const RECORD_EVERY: Duration = Duration::from_secs(60);
+
+    /// Fetch the history.
+    fn fetch(
+        &mut self,
+        venue: &Arc<dyn Venue>,
+        account: &str,
+        app: &App,
+        options: &RunOptions,
+        updates: &mpsc::Sender<Update>,
+    ) {
+        if self.fetching {
+            return;
+        }
+        if self
+            .last_fetch
+            .is_some_and(|at| at.elapsed() < Self::FRESH_FOR)
+            && !app.performance().series.is_empty()
+        {
+            return; // what we already have is recent enough
+        }
+
+        self.fetching = true;
+        self.last_fetch = Some(std::time::Instant::now());
+
+        let venue = Arc::clone(venue);
+        let updates = updates.clone();
+        // The widest window is fetched once and filtered locally, so changing
+        // the panel's window never costs another request.
+        let since = now_ms() - options.history_days * crate::performance::DAY_MS;
+        let account = account.to_owned();
+
+        tokio::spawn(async move {
+            let store = history::Store::for_account(&account);
+            let series = history::load(store.as_ref(), venue.as_ref(), since).await;
+            let _ = updates.send(Update::Equity(series)).await;
+        });
+    }
+
+    /// Store the balance we can see now, so a long window has something to show
+    /// once the venue's own history runs out.
+    fn record(&mut self, venue: &Arc<dyn Venue>, account_name: &str, app: &App) {
+        if !venue.records_history() {
+            return;
+        }
+        let Some(account) = &app.account else {
+            return;
+        };
+        let due = self
+            .last_record
+            .is_none_or(|at| at.elapsed() >= Self::RECORD_EVERY);
+        if !due {
+            return;
+        }
+        self.last_record = Some(std::time::Instant::now());
+
+        let point = crate::performance::EquityPoint {
+            time_ms: now_ms(),
+            wallet: account.wallet_balance,
+            external_flow: 0.0,
+        };
+        if let Some(store) = history::Store::for_account(account_name) {
+            if let Err(error) = store.record(vec![point], false) {
+                tracing::warn!(%error, "could not record today's balance");
+            }
+        }
     }
 }
 

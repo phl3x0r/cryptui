@@ -8,6 +8,7 @@ pub(crate) mod chart;
 pub(crate) mod footer;
 pub mod format;
 pub(crate) mod header;
+pub(crate) mod performance;
 pub(crate) mod picker;
 pub(crate) mod positions;
 pub(crate) mod theme;
@@ -40,8 +41,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     positions::render(frame, areas.positions, app);
     footer::render(frame, areas.footer, app);
 
-    // Drawn last so it sits above the panels.
+    // Drawn last so they sit above the panels.
     picker::render(frame, frame.area(), app);
+    performance::render(frame, frame.area(), app);
 }
 
 /// Regions of the screen.

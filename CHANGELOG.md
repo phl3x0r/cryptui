@@ -6,7 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Account performance panel (`e`): the wallet-balance curve with total return,
+  CAGR, volatility, Sharpe, Sortino, max drawdown, Calmar, win rate, best and
+  worst day, over a selectable window of one month, three months, a year or
+  everything on record (`1`-`4`, `[`/`]`).
+- `--print performance [--window 1m|3m|1y|all]` for the same figures without a
+  terminal.
+
+### Notes
+
+- The curve is reconstructed from the venue's income records anchored on the
+  current balance, net of deposits and withdrawals, and today's balance is
+  recorded locally on each run. Binance serves only a few months of income and
+  no equity history, so long windows show the coverage actually available, which
+  the panel states explicitly.
 
 ## [0.1.1] - 2026-09-30
 

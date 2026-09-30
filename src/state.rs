@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 
 use crate::auth::now_ms;
 use crate::chart::{MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
+use crate::performance::{EquitySeries, Metrics, Window};
 use crate::venue::{AccountSnapshot, Interval, Kline, Position, PositionSide, Symbol, VenueId};
 
 /// A column of the positions table.
@@ -169,6 +170,8 @@ pub enum Feed {
     Chart,
     /// The tradable-contract list used by the symbol picker.
     Symbols,
+    /// The account's performance history.
+    Performance,
 }
 
 impl Feed {
@@ -179,6 +182,7 @@ impl Feed {
             Self::Account => "account",
             Self::Chart => "chart",
             Self::Symbols => "symbols",
+            Self::Performance => "performance",
         }
     }
 }
@@ -256,6 +260,8 @@ pub enum Update {
     Kline(Kline),
     /// The venue's tradable contracts, for the symbol picker.
     Symbols(Vec<Symbol>),
+    /// The account's daily history, for the performance panel.
+    Equity(EquitySeries),
     /// Fresh mark prices, keyed by contract.
     Marks(Vec<(String, f64)>),
     /// A feed failed; the previous data stays on screen.
@@ -508,6 +514,28 @@ pub struct PickerState {
     pub(crate) selected: usize,
 }
 
+/// The account performance panel: whether it is open, what it shows, and the
+/// history behind it.
+#[derive(Debug, Default)]
+pub struct Performance {
+    pub(crate) open: bool,
+    pub(crate) window: Window,
+    pub(crate) series: EquitySeries,
+    pub(crate) feed: FeedStatus,
+}
+
+impl Performance {
+    /// The series as the current window sees it.
+    pub fn windowed(&self, now_ms: i64) -> EquitySeries {
+        self.series.window(self.window, now_ms)
+    }
+
+    /// Metrics for the window, if there is enough history.
+    pub fn metrics(&self, now_ms: i64) -> Option<Metrics> {
+        self.windowed(now_ms).metrics()
+    }
+}
+
 /// All state the UI renders from.
 pub struct App {
     pub(crate) account_label: String,
@@ -520,6 +548,10 @@ pub struct App {
     pub(crate) symbols_feed: FeedStatus,
     /// Open symbol picker, if any.
     pub(crate) picker: Option<PickerState>,
+    /// Account performance panel.
+    pub(crate) performance: Performance,
+    /// Set when the history should be (re)fetched.
+    pub(crate) history_requested: bool,
     pub(crate) positions: Vec<Position>,
     pub(crate) sort: Sort,
     /// What the size column shows.
@@ -555,6 +587,8 @@ impl App {
             symbols: Vec::new(),
             symbols_feed: FeedStatus::default(),
             picker: None,
+            performance: Performance::default(),
+            history_requested: false,
             positions: Vec::new(),
             sort: Sort::by_pnl_descending(),
             size_units: SizeUnits::default(),
@@ -602,6 +636,11 @@ impl App {
             Update::Marks(marks) => {
                 self.apply_marks(&marks);
             }
+            Update::Equity(series) => {
+                tracing::debug!(points = series.len(), "account history loaded");
+                self.performance.series = series;
+                self.performance.feed.mark_success(now);
+            }
             Update::Symbols(symbols) => {
                 tracing::debug!(count = symbols.len(), "tradable contracts loaded");
                 self.symbols = symbols;
@@ -616,6 +655,7 @@ impl App {
                     Feed::Account => &mut self.account_feed,
                     Feed::Chart => &mut self.chart.feed,
                     Feed::Symbols => &mut self.symbols_feed,
+                    Feed::Performance => &mut self.performance.feed,
                 };
                 status.mark_failure(message);
             }
@@ -756,6 +796,15 @@ impl App {
         self.chart_override = None;
         self.chart.clear();
         self.picker = None;
+        // Another account has another history, but the panel stays as the user
+        // left it — open or closed — and refetches in the background.
+        let (open, window) = (self.performance.open, self.performance.window);
+        self.performance = Performance {
+            open,
+            window,
+            ..Performance::default()
+        };
+        self.history_requested = open;
     }
 
     /// Ask the event loop to move to the next configured account.
@@ -945,6 +994,62 @@ impl App {
     pub fn picker_selected_symbol(&self) -> Option<&Symbol> {
         let selected = self.picker.as_ref().map_or(0, |picker| picker.selected);
         self.picker_matches().get(selected).copied()
+    }
+
+    /// Show or hide the performance panel, fetching history the first time.
+    pub fn toggle_performance(&mut self) {
+        self.performance.open = !self.performance.open;
+        if self.performance.open {
+            self.request_history();
+        }
+    }
+
+    /// Whether the panel is open.
+    pub fn performance_is_open(&self) -> bool {
+        self.performance.open
+    }
+
+    /// Close the panel if it is open.
+    pub fn close_performance(&mut self) {
+        self.performance.open = false;
+    }
+
+    /// Select a window for the panel.
+    pub fn set_performance_window(&mut self, window: Window) {
+        if self.performance.window != window {
+            tracing::debug!(?window, "performance window changed");
+            self.performance.window = window;
+        }
+    }
+
+    /// Move to the next or previous window.
+    pub fn cycle_performance_window(&mut self, forward: bool) {
+        let window = if forward {
+            self.performance.window.next()
+        } else {
+            self.performance.window.previous()
+        };
+        self.set_performance_window(window);
+    }
+
+    /// Label of the active account, for the panel's title.
+    pub fn account_label(&self) -> &str {
+        &self.account_label
+    }
+
+    /// The panel's state, for the UI.
+    pub fn performance(&self) -> &Performance {
+        &self.performance
+    }
+
+    /// Ask for the history to be fetched.
+    pub fn request_history(&mut self) {
+        self.history_requested = true;
+    }
+
+    /// Consume a pending history request.
+    pub fn take_history_request(&mut self) -> bool {
+        std::mem::take(&mut self.history_requested)
     }
 
     /// Swap the size column between contracts and notional value.

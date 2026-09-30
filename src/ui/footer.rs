@@ -14,7 +14,7 @@ use super::{format, theme};
 const HINTS: &str =
     "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · n notional";
 /// Chart and account hints.
-const HINTS_MORE: &str = "h/l pan · + - zoom · f follow · m MAs · p entry · [ ] interval · s symbol · a account · r refresh";
+const HINTS_MORE: &str = "h/l pan · + - zoom · f follow · m MAs · p entry · [ ] interval · s symbol · a account · e performance · r refresh";
 
 /// Draw the footer.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -142,6 +142,10 @@ mod tests {
             "zoom",
             "symbol",
             "account",
+            "MAs",
+            "entry",
+            "notional",
+            "performance",
         ] {
             assert!(hints.contains(expected), "missing `{expected}`: {hints}");
         }

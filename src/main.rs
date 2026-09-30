@@ -201,6 +201,7 @@ async fn main() -> ExitCode {
         interval: effective_interval(&cli, &config),
         refresh_interval_ms: config.settings().refresh_interval_ms(),
         chart_history: config.settings().chart_history_candles(),
+        history_days: 365,
     };
 
     tracing::debug!(

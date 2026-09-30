@@ -25,6 +25,12 @@ clear && cat frame.ans
 - **Candlestick chart** with MA(7/25/99) overlays, a volume pane, price and time
   axes, intervals from 1m to 1d, pan, zoom and follow mode.
 - **Symbol picker** over every tradable contract, not just the ones you hold.
+- **Account performance**: `e` opens a panel with the wallet-balance curve and
+  the figures that describe it — total return, CAGR, volatility, Sharpe, Sortino,
+  max drawdown, Calmar and win rate — over a month, three months, a year, or
+  everything on record (`1`–`4`, or `[`/`]`). The curve is reconstructed from the
+  venue's income records, net of deposits and withdrawals, and each run records
+  today's balance locally so longer windows fill in over time.
 - **Size in contracts or in value**: the size column shows the position value in
   USDT by default, and `n` swaps it to contract amounts. Sorting follows
   whichever unit the column is showing.
@@ -113,6 +119,8 @@ synthetic — never record a real account into a repository.
 | `m` | Show or hide the moving averages |
 | `p` | Show or hide the entry-price line of a held position |
 | `n` | Swap the size column between position value and contract amount |
+| `e` | Open or close the account performance panel |
+| `1`–`4` | Performance window: 1 month, 3 months, 1 year, everything (`[`/`]` cycle) |
 | `[` / `]` | Longer / shorter candle interval |
 | `s` | Symbol picker (`Enter` picks, `Esc` cancels, typing filters) |
 | `a` | Switch to the next configured account |
@@ -122,6 +130,13 @@ Inside the symbol picker the global shortcuts are suspended, so `q` filters
 rather than quits.
 
 ## Troubleshooting
+
+**Why is the year view empty?** The venue serves only a few months of income
+history — on a new account, only since it opened — and exposes no equity history
+at all. The curve is therefore reconstructed from income records back to the
+oldest one the venue will serve, and today's balance is recorded locally on each
+run, so the longer windows fill in as the account ages. The panel states the
+coverage it actually has instead of stretching a short series.
 
 **Where do the logs go?** The interactive UI writes to
 `$XDG_STATE_HOME/cryptui/cryptui.log` (`~/.local/state/cryptui/cryptui.log` by
