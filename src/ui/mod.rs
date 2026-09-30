@@ -131,16 +131,24 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn sample_position(symbol: &str, side: PositionSide, pnl: f64) -> Position {
+        let size = 12.5;
+        let mark_price = 85_500.0;
+        let signed = match side {
+            PositionSide::Long => size,
+            PositionSide::Short => -size,
+        };
+
         Position {
             symbol: symbol.to_owned(),
             side,
-            size: 12.5,
+            size,
             entry_price: 85_000.0,
-            mark_price: 85_500.0,
+            mark_price,
             unrealized_pnl: pnl,
             initial_margin: 1_000.0,
             maintenance_margin: 50.0,
-            notional: 12_500.0,
+            // Kept consistent with size and mark price, as the venue reports it.
+            notional: mark_price * signed,
             liquidation_price: Some(80_000.0),
         }
     }

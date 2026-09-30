@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The price axis marks the entry price of the position being charted, next to
+  the live price, and only while that price is on screen. It follows the `p`
+  overlay.
+- The size column shows the position value in USDT by default, and `n` swaps it
+  to the venue's contract amount. Sorting by the column follows whichever unit is
+  displayed, so the visible order always matches the visible numbers.
 - Toggleable chart overlays: `m` shows or hides the moving averages, and `p`
   shows or hides the entry-price line of the position being charted. When the
   entry is outside the visible range the price range widens to include it, up to

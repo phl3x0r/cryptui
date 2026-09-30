@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
-use crate::state::{App, SortColumn};
+use crate::state::{App, SizeUnits, SortColumn};
 use crate::venue::Position;
 
 use super::{format, theme};
@@ -43,7 +43,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<Row<'static>> = app
         .positions
         .iter()
-        .map(|position| row_for(position))
+        .map(|position| row_for(position, app.size_units()))
         .collect();
 
     let table = Table::new(rows, COLUMN_WIDTHS)
@@ -75,10 +75,15 @@ fn panel_title(app: &App) -> Line<'static> {
 fn heading_row(app: &App) -> Row<'static> {
     let cells = SortColumn::ALL.map(|column| {
         let active = column == app.sort.column;
+        // The size column is named for what it currently shows.
+        let heading = match column {
+            SortColumn::Size => app.size_units().heading(),
+            _ => column.heading(),
+        };
         let text = if active {
-            format!("{} {}", column.heading(), app.sort.indicator())
+            format!("{heading} {}", app.sort.indicator())
         } else {
-            column.heading().to_owned()
+            heading.to_owned()
         };
         let style = if active {
             Style::default()
@@ -93,11 +98,17 @@ fn heading_row(app: &App) -> Row<'static> {
 }
 
 /// One data row.
-fn row_for(position: &Position) -> Row<'static> {
+fn row_for(position: &Position, size_units: SizeUnits) -> Row<'static> {
     let return_on_margin = if position.initial_margin > 0.0 {
         position.unrealized_pnl / position.initial_margin * 100.0
     } else {
         0.0
+    };
+
+    // Contracts are the venue's unit; the value is what the position is worth.
+    let size = match size_units {
+        SizeUnits::Contracts => format::quantity(position.size),
+        SizeUnits::Notional => format::money(position.notional.abs()),
     };
 
     Row::new(vec![
@@ -109,10 +120,7 @@ fn row_for(position: &Position) -> Row<'static> {
             pad_right(&position.side.to_string(), COLUMN_WIDTHS[1]),
             theme::side_style(position.side),
         ),
-        cell(
-            pad_left(&format::quantity(position.size), COLUMN_WIDTHS[2]),
-            Style::default(),
-        ),
+        cell(pad_left(&size, COLUMN_WIDTHS[2]), Style::default()),
         cell(
             pad_left(&format::price(position.entry_price), COLUMN_WIDTHS[3]),
             Style::default(),
@@ -218,7 +226,9 @@ mod tests {
             .find(|line| line.contains("BTCUSDT"))
             .expect("BTCUSDT row");
 
-        for heading in SortColumn::ALL.map(SortColumn::heading) {
+        for heading in [
+            "Symbol", "Side", "Notional", "Entry", "Mark", "Margin", "PnL",
+        ] {
             assert!(text.contains(heading), "heading {heading} is missing");
         }
         assert!(row.contains("85,000.00"), "entry: {row}");
@@ -239,12 +249,87 @@ mod tests {
     }
 
     #[test]
+    fn the_size_column_shows_the_position_value_by_default() {
+        let app = sample_app();
+        let row = table_rows(&frame_lines(&app, 120, 40))
+            .into_iter()
+            .find(|line| line.contains("BTCUSDT"))
+            .expect("BTCUSDT row");
+        let text = frame_lines(&app, 120, 40).join("\n");
+
+        assert!(
+            text.contains("Notional"),
+            "the column is named for its unit: {text}"
+        );
+        assert!(
+            row.contains("1,068,750.00"),
+            "12.5 contracts at 85,500 is the value: {row}"
+        );
+        assert!(
+            !row.contains("12.50"),
+            "the contract amount is not shown: {row}"
+        );
+    }
+
+    #[test]
+    fn toggling_the_size_column_shows_contracts_again() {
+        let mut app = sample_app();
+        app.toggle_size_units();
+
+        let lines = frame_lines(&app, 120, 40);
+        let row = table_rows(&lines)
+            .into_iter()
+            .find(|line| line.contains("BTCUSDT"))
+            .expect("BTCUSDT row");
+        let text = lines.join("\n");
+
+        assert!(
+            text.contains("Size"),
+            "the heading follows the unit: {text}"
+        );
+        assert!(!text.contains("Notional"), "got: {text}");
+        assert!(row.contains("12.50"), "the contract amount: {row}");
+        assert!(!row.contains("1,068,750.00"), "not the value: {row}");
+    }
+
+    #[test]
+    fn sorting_by_size_follows_what_the_column_shows() {
+        // Same mark price, so the two orderings differ only through the sizes.
+        let mut small = sample_position("AAAUSDT", PositionSide::Long, 1.0);
+        small.size = 1.0;
+        small.notional = 1_000.0;
+        let mut large = sample_position("BBBUSDT", PositionSide::Long, 1.0);
+        large.size = 900.0;
+        large.notional = 10.0;
+
+        let mut app = sample_app();
+        app.set_positions(vec![small, large]);
+        app.sort_by_column(SortColumn::Size);
+
+        // Notional: the small position is worth more, so it sorts first.
+        let by_value = frame_lines(&app, 120, 40);
+        assert_eq!(row_index(&by_value, "AAAUSDT"), 0, "largest value first");
+
+        app.toggle_size_units();
+        let by_contracts = frame_lines(&app, 120, 40);
+        assert_eq!(
+            row_index(&by_contracts, "BBBUSDT"),
+            0,
+            "largest contract amount first"
+        );
+    }
+
+    #[test]
     fn the_sort_indicator_is_visible_for_every_column() {
         let mut app = sample_app();
         for column in SortColumn::ALL {
             app.sort_by_column(column);
             let text = frame_lines(&app, 120, 40).join("\n");
-            let expected = format!("{} {}", column.heading(), app.sort.indicator());
+            let heading = match column {
+                SortColumn::Size => app.size_units().heading(),
+                _ => column.heading(),
+            };
+            let expected = format!("{heading} {}", app.sort.indicator());
             assert!(
                 text.contains(&expected),
                 "`{expected}` is missing or truncated for {column:?}"
@@ -257,8 +342,10 @@ mod tests {
         let mut app = sample_app();
         let mut small = sample_position("AAAUSDT", PositionSide::Long, 1.0);
         small.size = 1.0;
+        small.notional = 85_500.0;
         let mut large = sample_position("BBBUSDT", PositionSide::Long, 2.0);
         large.size = 900.0;
+        large.notional = 900.0 * 85_500.0;
         app.set_positions(vec![small, large]);
 
         let default_order = frame_lines(&app, 120, 40);

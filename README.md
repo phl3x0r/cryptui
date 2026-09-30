@@ -49,8 +49,12 @@ clear && cat frame.ans
 - **Candlestick chart** with MA(7/25/99) overlays, a volume pane, price and time
   axes, intervals from 1m to 1d, pan, zoom and follow mode.
 - **Symbol picker** over every tradable contract, not just the ones you hold.
+- **Size in contracts or in value**: the size column shows the position value in
+  USDT by default, and `n` swaps it to contract amounts. Sorting follows
+  whichever unit the column is showing.
 - **Toggleable overlays**: `m` shows or hides the moving averages, `p` shows or
-  hides the entry-price line of the position being charted. The price range
+  hides the entry-price line of the position being charted, marked on the price
+  axis next to the live price. The price range
   widens — within a bounded multiple — so an entry far from the current price
   stays on screen instead of being clipped away.
 - **Honest feed health**: each feed reports its age, and says why it failed
@@ -132,6 +136,7 @@ synthetic — never record a real account into a repository.
 | `f` | Follow the newest candle again |
 | `m` | Show or hide the moving averages |
 | `p` | Show or hide the entry-price line of a held position |
+| `n` | Swap the size column between position value and contract amount |
 | `[` / `]` | Longer / shorter candle interval |
 | `s` | Symbol picker (`Enter` picks, `Esc` cancels, typing filters) |
 | `a` | Switch to the next configured account |

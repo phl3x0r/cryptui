@@ -11,7 +11,8 @@ use crate::state::App;
 use super::{format, theme};
 
 /// Table and navigation hints.
-const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse";
+const HINTS: &str =
+    "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · n notional";
 /// Chart and account hints.
 const HINTS_MORE: &str = "h/l pan · + - zoom · f follow · m MAs · p entry · [ ] interval · s symbol · a account · r refresh";
 

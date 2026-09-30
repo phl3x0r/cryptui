@@ -77,6 +77,38 @@ impl SortColumn {
     }
 }
 
+/// What the size column shows.
+///
+/// Contracts are the venue's own unit and comparable across contracts; the
+/// notional value is comparable across an account, which is usually the more
+/// useful question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SizeUnits {
+    /// Contract quantity, as the venue reports it.
+    Contracts,
+    /// Position value in the quote asset.
+    #[default]
+    Notional,
+}
+
+impl SizeUnits {
+    /// Swap between the two representations.
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::Contracts => Self::Notional,
+            Self::Notional => Self::Contracts,
+        };
+    }
+
+    /// Heading for the size column in this representation.
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Contracts => "Size",
+            Self::Notional => "Notional",
+        }
+    }
+}
+
 /// Current ordering of the positions table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sort {
@@ -490,6 +522,8 @@ pub struct App {
     pub(crate) picker: Option<PickerState>,
     pub(crate) positions: Vec<Position>,
     pub(crate) sort: Sort,
+    /// What the size column shows.
+    pub(crate) size_units: SizeUnits,
     pub(crate) selected: usize,
     pub(crate) account: Option<AccountSnapshot>,
     pub(crate) positions_feed: FeedStatus,
@@ -523,6 +557,7 @@ impl App {
             picker: None,
             positions: Vec::new(),
             sort: Sort::by_pnl_descending(),
+            size_units: SizeUnits::default(),
             selected: 0,
             account: None,
             positions_feed: FeedStatus::default(),
@@ -607,7 +642,7 @@ impl App {
         let column = self.sort.column;
         let descending = self.sort.descending;
         self.positions.sort_by(|left, right| {
-            let primary = compare(left, right, column);
+            let primary = compare(left, right, column, self.size_units);
             let primary = if descending {
                 primary.reverse()
             } else {
@@ -912,6 +947,17 @@ impl App {
         self.picker_matches().get(selected).copied()
     }
 
+    /// Swap the size column between contracts and notional value.
+    pub fn toggle_size_units(&mut self) {
+        self.size_units.toggle();
+        self.resort_keeping_selection();
+    }
+
+    /// What the size column currently shows.
+    pub fn size_units(&self) -> SizeUnits {
+        self.size_units
+    }
+
     /// Show or hide the chart's moving averages.
     pub fn toggle_averages(&mut self) {
         self.chart.overlays.toggle_averages();
@@ -970,16 +1016,34 @@ impl App {
 }
 
 /// Order two positions by one column.
-fn compare(left: &Position, right: &Position, column: SortColumn) -> Ordering {
+fn compare(
+    left: &Position,
+    right: &Position,
+    column: SortColumn,
+    size_units: SizeUnits,
+) -> Ordering {
     match column {
         SortColumn::Symbol => left.symbol.cmp(&right.symbol),
         SortColumn::Side => side_rank(left.side).cmp(&side_rank(right.side)),
-        SortColumn::Size => left.size.total_cmp(&right.size),
+        // Sorting follows what the column shows, so the visible order always
+        // matches the visible numbers.
+        SortColumn::Size => match size_units {
+            SizeUnits::Contracts => left.size.total_cmp(&right.size),
+            SizeUnits::Notional => value(left).total_cmp(&value(right)),
+        },
         SortColumn::Entry => left.entry_price.total_cmp(&right.entry_price),
         SortColumn::Mark => left.mark_price.total_cmp(&right.mark_price),
         SortColumn::Margin => left.initial_margin.total_cmp(&right.initial_margin),
         SortColumn::Pnl => left.unrealized_pnl.total_cmp(&right.unrealized_pnl),
     }
+}
+
+/// Position value at the mark price, always positive.
+///
+/// The venue reports a negative notional for shorts; direction belongs to the
+/// side column, not to the size.
+fn value(position: &Position) -> f64 {
+    position.notional.abs()
 }
 
 /// Rank a side so longs and shorts order predictably.

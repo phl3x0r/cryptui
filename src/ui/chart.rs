@@ -19,6 +19,9 @@ use super::{format, theme};
 const AXIS_WIDTH: u16 = 11;
 /// Smallest price pane worth drawing.
 const MIN_PRICE_HEIGHT: u16 = 3;
+/// Braille dots per cell row, which is the vertical resolution the canvas maps
+/// prices onto.
+const DOTS_PER_CELL_ROW: usize = 4;
 /// How far the price range may stretch to keep the entry line visible, as a
 /// multiple of the visible candle range.
 const ENTRY_RANGE_LIMIT: f64 = 3.0;
@@ -114,6 +117,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
             low,
             high,
             last_close,
+            entry,
             panes[0].height,
         )))
         .alignment(Alignment::Right),
@@ -328,7 +332,13 @@ fn candle_color(candle: &Kline) -> Color {
 
 /// Price labels for the axis: high at the top, low at the bottom, the newest
 /// close marked where it falls.
-fn price_axis(low: f64, high: f64, last_close: Option<f64>, height: u16) -> Vec<Line<'static>> {
+fn price_axis(
+    low: f64,
+    high: f64,
+    last_close: Option<f64>,
+    entry: Option<f64>,
+    height: u16,
+) -> Vec<Line<'static>> {
     let height = height as usize;
     let mut lines = vec![Line::default(); height];
     if height == 0 {
@@ -337,6 +347,7 @@ fn price_axis(low: f64, high: f64, last_close: Option<f64>, height: u16) -> Vec<
 
     let label = |price: f64, style: Style| Line::from(Span::styled(format::price(price), style));
     let plain = Style::default().fg(theme::LABEL);
+    let marked = |colour| Style::default().fg(colour).add_modifier(Modifier::BOLD);
 
     lines[0] = label(high, plain);
     if height >= 3 {
@@ -344,25 +355,42 @@ fn price_axis(low: f64, high: f64, last_close: Option<f64>, height: u16) -> Vec<
         lines[height - 1] = label(low, plain);
     }
 
-    if let Some(close) = last_close
-        && low <= close
-        && close <= high
-        && high > low
-        && height >= 4
-    {
-        let fraction = (high - close) / (high - low);
-        let row = (fraction * (height - 1) as f64).round() as usize;
-        if row != 0 && row != height - 1 && row != height / 2 {
-            lines[row] = label(
-                close,
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            );
+    // Annotations replace grid labels rather than being hidden behind them:
+    // knowing where the position's entry sits is the point of the pane. The
+    // live price keeps its row when the two would collide, because the entry is
+    // already drawn as a line across the pane.
+    let mut close_row = None;
+    if high > low {
+        if let Some(close) = last_close.filter(|close| low <= *close && *close <= high) {
+            let row = axis_row(close, low, high, height);
+            lines[row] = label(close, marked(theme::ACCENT));
+            close_row = Some(row);
+        }
+        if let Some(price) = entry.filter(|price| low <= *price && *price <= high) {
+            let row = axis_row(price, low, high, height);
+            if Some(row) != close_row {
+                lines[row] = label(price, marked(theme::ENTRY));
+            }
         }
     }
 
     lines
+}
+
+/// Axis row a price falls on: the top row is the highest price.
+///
+/// Mirrors the canvas exactly. The canvas maps a price onto Braille *dots* —
+/// four per cell row — so a label computed from cell rows alone lands a row away
+/// from the line drawn at the same price.
+fn axis_row(price: f64, low: f64, high: f64, height: usize) -> usize {
+    if height == 0 || high <= low {
+        return 0;
+    }
+
+    let dots = (height * DOTS_PER_CELL_ROW) as f64;
+    let dot = ((high - price) * (dots - 1.0) / (high - low)).round();
+    let dot = dot.clamp(0.0, dots - 1.0) as usize;
+    (dot / DOTS_PER_CELL_ROW).min(height - 1)
 }
 
 /// Time labels under the chart: the first, middle and last visible candle.
@@ -422,7 +450,7 @@ mod tests {
     use super::super::tests::{
         frame_cells, frame_lines, sample_account, sample_app, sample_candles,
     };
-    use super::{AVERAGE_COLORS, theme};
+    use super::{AVERAGE_COLORS, axis_row, theme};
 
     /// The chart panel's title row, where the overlay legend lives.
     ///
@@ -492,6 +520,101 @@ mod tests {
         assert!(
             text.contains(&crate::ui::format::price(low)),
             "low label {low} missing from: {text}"
+        );
+    }
+
+    /// The right-hand axis column of every rendered row.
+    fn axis_column(app: &App) -> String {
+        frame_lines(app, 140, 40)
+            .iter()
+            .map(|line| {
+                let reversed: String = line.chars().rev().take(11).collect();
+                reversed.chars().rev().collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_entry_price_is_marked_on_the_axis_like_the_live_price() {
+        let app = chart_app();
+        let axis = axis_column(&app);
+
+        assert!(
+            axis.contains("85,000.00"),
+            "the entry price is labelled on the axis: {axis}"
+        );
+        let close = app.chart.last_close().expect("a close");
+        assert!(
+            axis.contains(&crate::ui::format::price(close)),
+            "the live price is still labelled: {axis}"
+        );
+    }
+
+    #[test]
+    fn hiding_the_entry_line_also_removes_its_axis_marker() {
+        let mut app = chart_app();
+        app.toggle_entry_line();
+
+        let axis = axis_column(&app);
+        assert!(!axis.contains("85,000.00"), "got: {axis}");
+    }
+
+    #[test]
+    fn a_contract_that_is_not_held_marks_no_entry_on_the_axis() {
+        let mut app = sample_app();
+        app.chart.reset("SOLUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "SOLUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: sample_candles(),
+        });
+
+        let axis = axis_column(&app);
+        assert!(!axis.contains("85,000.00"), "got: {axis}");
+    }
+
+    #[test]
+    fn an_entry_outside_the_visible_range_is_not_marked() {
+        // The marker must not claim a row for a price that is off-screen, or it
+        // would point at the wrong level.
+        let mut app = chart_app();
+        let mut position = app.chart_position().cloned().expect("the held contract");
+        position.entry_price = 1.0;
+        app.set_positions(vec![position]);
+
+        let axis = axis_column(&app);
+        assert!(!axis.contains("1.00"), "got: {axis}");
+    }
+
+    #[test]
+    fn axis_rows_follow_the_canvas_dot_grid() {
+        // Ten rows are forty dots, so a price a couple of dots below the top is
+        // still in the top row rather than in the one below it.
+        assert_eq!(axis_row(100.0, 0.0, 100.0, 10), 0);
+        assert_eq!(axis_row(97.5, 0.0, 100.0, 10), 0, "one dot down is row 0");
+        assert_eq!(axis_row(90.0, 0.0, 100.0, 10), 1, "four dots down is row 1");
+    }
+
+    #[test]
+    fn axis_rows_map_prices_high_to_low() {
+        assert_eq!(
+            axis_row(100.0, 0.0, 100.0, 10),
+            0,
+            "the high is the top row"
+        );
+        assert_eq!(
+            axis_row(0.0, 0.0, 100.0, 10),
+            9,
+            "the low is the bottom row"
+        );
+        // Ten rows map 0..9, so the midpoint rounds to row 5 — which is the
+        // same row the grid's middle label uses.
+        assert_eq!(axis_row(50.0, 0.0, 100.0, 10), 5, "the middle lines up");
+        assert_eq!(
+            axis_row(1_000.0, 0.0, 100.0, 10),
+            0,
+            "a price above the range clamps instead of overflowing"
         );
     }
 
