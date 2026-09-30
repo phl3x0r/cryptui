@@ -145,6 +145,31 @@ pub(crate) mod tests {
         }
     }
 
+    /// The rendered frame as `(x, y, symbol, foreground)` per cell.
+    ///
+    /// Layout snapshots compare text; this exists for the cases where the
+    /// *colour* is the thing under test.
+    pub(crate) fn frame_cells(
+        app: &App,
+        width: u16,
+        height: u16,
+    ) -> Vec<(u16, u16, String, Option<ratatui::style::Color>)> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render(frame, app))
+            .expect("draw succeeds");
+
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let cell = &buffer[(x, y)];
+                (x, y, cell.symbol().to_owned(), cell.style().fg)
+            })
+            .collect()
+    }
+
     /// Deterministic candles for chart snapshots: a slow wave plus a drift,
     /// starting at 2026-09-30 00:00 UTC with 15-minute steps.
     pub(crate) fn sample_candles() -> Vec<Kline> {

@@ -16,6 +16,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Chart overlays no longer recolour the candles they cross. A Braille cell holds
+  one colour, and the moving averages and entry line were drawn after the
+  candles, so wherever a line crossed a bar the bar took the line's colour —
+  which reads as the bar changing direction. The candles are now drawn last, so
+  a line is interrupted by the bars it crosses and the bars keep their colour.
 - `--account <name>` now selects the opening account in the interactive UI. It
   was only honoured by the headless commands, so `cryptui --account paper`
   silently opened the configured default account instead. An unknown name is now

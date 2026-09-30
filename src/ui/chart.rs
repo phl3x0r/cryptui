@@ -81,12 +81,16 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .y_bounds([low, high])
         .marker(Marker::Braille)
         .paint(|context| {
+            // A Braille cell holds one colour, so whatever is drawn last wins
+            // it. The reference lines go first and the candles last: an overlay
+            // must never recolour the bars it crosses, which reads as the bars
+            // changing direction.
             draw_last_price(context, last_close, count);
-            draw_candles(context, chart.visible());
             if chart.overlays.averages {
                 draw_averages(context, chart);
             }
             draw_entry(context, entry, count);
+            draw_candles(context, chart.visible());
         });
     frame.render_widget(price, panes[0]);
 
@@ -415,7 +419,10 @@ mod tests {
     use crate::state::{App, Update};
     use crate::venue::Interval;
 
-    use super::super::tests::{frame_lines, sample_account, sample_app, sample_candles};
+    use super::super::tests::{
+        frame_cells, frame_lines, sample_account, sample_app, sample_candles,
+    };
+    use super::{AVERAGE_COLORS, theme};
 
     /// The chart panel's title row, where the overlay legend lives.
     ///
@@ -528,6 +535,135 @@ mod tests {
 
         app.zoom_chart(0.5);
         assert!(app.chart.visible().len() < before, "zooming in shows fewer");
+    }
+
+    /// Positions and colours of every cell the candles paint.
+    fn candle_cells(
+        app: &App,
+    ) -> std::collections::BTreeMap<(u16, u16), Option<ratatui::style::Color>> {
+        frame_cells(app, 120, 40)
+            .into_iter()
+            .filter(|(_, _, text, fg)| {
+                let braille = text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c));
+                braille
+                    && matches!(fg, Some(colour) if *colour == theme::POSITIVE || *colour == theme::NEGATIVE)
+            })
+            .map(|(x, y, _, fg)| ((x, y), fg))
+            .collect()
+    }
+
+    /// One candle whose range spans the entry price, so a line must cross it.
+    fn crossing_app() -> App {
+        let mut app = sample_app();
+        app.toggle_averages();
+        app.chart.reset("BTCUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "BTCUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: vec![crate::venue::Kline {
+                open_time_ms: 1_790_726_400_000,
+                open: 84_000.0,
+                high: 86_000.0,
+                low: 83_000.0,
+                close: 85_500.0,
+                volume: 1.0,
+                close_time_ms: 1_790_727_299_999,
+                closed: true,
+            }],
+        });
+        app
+    }
+
+    /// Candles where MA7 rises into a tall candle, so the average crosses it.
+    fn ma_crossing_app() -> App {
+        let close_at = |index: usize| {
+            if (6..9).contains(&index) {
+                88_000.0
+            } else {
+                84_000.0
+            }
+        };
+        let mut candles: Vec<crate::venue::Kline> = (0..10)
+            .map(|index| crate::venue::Kline {
+                open_time_ms: 1_790_726_400_000 + index as i64 * 900_000,
+                open: close_at(index),
+                high: close_at(index) + 100.0,
+                low: close_at(index) - 100.0,
+                close: close_at(index),
+                volume: 1.0,
+                close_time_ms: 1_790_726_400_000 + (index as i64 + 1) * 900_000 - 1,
+                closed: true,
+            })
+            .collect();
+        // A tall candle the average has to pass through.
+        candles[9].high = 89_000.0;
+        candles[9].low = 83_000.0;
+
+        let mut app = sample_app();
+        app.toggle_entry_line();
+        app.chart.reset("BTCUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "BTCUSDT".to_owned(),
+            interval: Interval::M15,
+            candles,
+        });
+        app
+    }
+
+    #[test]
+    fn the_entry_line_does_not_recolour_the_candles_it_crosses() {
+        let mut app = crossing_app();
+        app.toggle_entry_line();
+        let painted_before = candle_cells(&app);
+        assert!(!painted_before.is_empty(), "the candle is drawn");
+
+        app.toggle_entry_line();
+        let cells = frame_cells(&app, 120, 40);
+        assert!(
+            cells.iter().any(|(_, _, _, fg)| *fg == Some(theme::ENTRY)),
+            "the entry line is drawn"
+        );
+
+        for (position, colour) in &painted_before {
+            let after = cells
+                .iter()
+                .find(|(x, y, _, _)| (*x, *y) == *position)
+                .map(|(_, _, _, fg)| *fg);
+            assert_eq!(
+                after,
+                Some(*colour),
+                "a cell painted by a candle changed colour at {position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_moving_average_does_not_recolour_the_candles_it_crosses() {
+        let mut app = ma_crossing_app();
+        app.toggle_averages();
+        let painted_before = candle_cells(&app);
+        assert!(!painted_before.is_empty(), "the candles are drawn");
+
+        app.toggle_averages();
+        let cells = frame_cells(&app, 120, 40);
+        assert!(
+            cells
+                .iter()
+                .any(|(_, _, _, fg)| *fg == Some(AVERAGE_COLORS[0])),
+            "the fast average is drawn"
+        );
+
+        for (position, colour) in &painted_before {
+            let after = cells
+                .iter()
+                .find(|(x, y, _, _)| (*x, *y) == *position)
+                .map(|(_, _, _, fg)| *fg);
+            assert_eq!(
+                after,
+                Some(*colour),
+                "a cell painted by a candle changed colour at {position:?}"
+            );
+        }
     }
 
     #[test]
