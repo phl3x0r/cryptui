@@ -10,8 +10,11 @@ use crate::state::App;
 
 use super::{format, theme};
 
-/// Key hints, kept in one place so they cannot drift from the key handler.
-const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse · h/l pan · + - zoom · f follow · [ ] interval · s symbol · r refresh";
+/// Table and navigation hints.
+const HINTS: &str = "q quit · j/k move · g/G ends · 1-7 sort column · , . cycle · R reverse";
+/// Chart and account hints.
+const HINTS_MORE: &str =
+    "h/l pan · + - zoom · f follow · [ ] interval · s symbol · a account · r refresh";
 
 /// Draw the footer.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -19,15 +22,25 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
     frame.render_widget(Paragraph::new(totals_line(app)), rows[0]);
-    if rows[1].height > 0 {
+
+    for (index, hints) in [HINTS, HINTS_MORE].into_iter().enumerate() {
+        let row = rows[index + 1];
+        if row.height == 0 {
+            continue;
+        }
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                HINTS,
+                hints,
                 Style::default().fg(theme::LABEL),
             ))),
-            rows[1],
+            row,
         );
     }
 }
@@ -94,12 +107,12 @@ mod tests {
     use crate::venue::{Interval, VenueId};
 
     use super::super::tests::{frame_lines, sample_app};
-    use super::HINTS;
+    use super::{HINTS, HINTS_MORE};
 
     #[test]
     fn totals_show_every_account_metric() {
         let lines = frame_lines(&sample_app(), 140, 40);
-        let totals = &lines[lines.len() - 2];
+        let totals = &lines[lines.len() - 3];
 
         assert!(totals.contains("Wallet 4,041.70"), "wallet: {totals}");
         assert!(totals.contains("Equity 4,038.14"), "equity: {totals}");
@@ -112,12 +125,24 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_line_advertises_the_real_key_map() {
+    fn the_hint_lines_advertise_the_real_key_map() {
         let lines = frame_lines(&sample_app(), 160, 40);
-        let hints = &lines[lines.len() - 1];
+        let hints = lines[lines.len() - 2..].join("\n");
 
-        assert_eq!(hints, HINTS.trim_end());
-        for expected in ["quit", "sort column", "interval", "refresh"] {
+        assert_eq!(
+            hints,
+            format!("{}\n{}", HINTS.trim_end(), HINTS_MORE.trim_end())
+        );
+        for expected in [
+            "quit",
+            "sort column",
+            "interval",
+            "refresh",
+            "pan",
+            "zoom",
+            "symbol",
+            "account",
+        ] {
             assert!(hints.contains(expected), "missing `{expected}`: {hints}");
         }
     }
@@ -131,6 +156,6 @@ mod tests {
             3_000,
         );
         let lines = frame_lines(&app, 120, 40);
-        assert!(lines[lines.len() - 2].contains("loading account"));
+        assert!(lines[lines.len() - 3].contains("loading account"));
     }
 }

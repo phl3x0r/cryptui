@@ -224,6 +224,8 @@ pub enum Update {
     Kline(Kline),
     /// The venue's tradable contracts, for the symbol picker.
     Symbols(Vec<Symbol>),
+    /// Fresh mark prices, keyed by contract.
+    Marks(Vec<(String, f64)>),
     /// A feed failed; the previous data stays on screen.
     Failed {
         /// Which feed failed.
@@ -272,15 +274,21 @@ impl Chart {
         self.symbol.is_some() && self.candles.is_empty()
     }
 
-    /// Point the chart at a new target and drop the old data.
-    pub fn reset(&mut self, symbol: String, interval: Interval) {
-        self.symbol = Some(symbol);
-        self.interval = interval;
+    /// Forget the target and its data, for example when the account changes.
+    pub fn clear(&mut self) {
+        self.symbol = None;
         self.candles.clear();
         self.averages = Default::default();
         self.follow = true;
         self.viewport = Viewport::new(self.viewport.visible());
         self.feed = FeedStatus::default();
+    }
+
+    /// Point the chart at a new target and drop the old data.
+    pub fn reset(&mut self, symbol: String, interval: Interval) {
+        self.clear();
+        self.symbol = Some(symbol);
+        self.interval = interval;
     }
 
     /// Replace the candle history.
@@ -431,6 +439,8 @@ pub struct App {
     pub(crate) positions_feed: FeedStatus,
     pub(crate) account_feed: FeedStatus,
     pub(crate) stale_after_ms: i64,
+    /// Set when the user asks to move to the next configured account.
+    pub(crate) switch_requested: bool,
     pub(crate) quit: bool,
 }
 
@@ -462,6 +472,7 @@ impl App {
             positions_feed: FeedStatus::default(),
             account_feed: FeedStatus::default(),
             stale_after_ms,
+            switch_requested: false,
             quit: false,
         }
     }
@@ -496,6 +507,9 @@ impl App {
             Update::Kline(kline) => {
                 self.chart.upsert(kline);
                 self.chart.feed.mark_success(now);
+            }
+            Update::Marks(marks) => {
+                self.apply_marks(&marks);
             }
             Update::Symbols(symbols) => {
                 tracing::debug!(count = symbols.len(), "tradable contracts loaded");
@@ -632,6 +646,63 @@ impl App {
         self.chart.averages = Default::default();
         self.chart.follow = true;
         self.chart.feed = FeedStatus::default();
+    }
+
+    /// Reset every feed for a newly selected account.
+    ///
+    /// Old data is dropped rather than blended: showing yesterday's positions
+    /// under a new account's name would be worse than showing nothing.
+    pub fn begin_account(&mut self, label: String, venue: VenueId) {
+        self.account_label = label;
+        self.venue = venue;
+        self.positions.clear();
+        self.selected = 0;
+        self.account = None;
+        self.positions_feed = FeedStatus::default();
+        self.account_feed = FeedStatus::default();
+        self.symbols.clear();
+        self.symbols_feed = FeedStatus::default();
+        self.chart_override = None;
+        self.chart.clear();
+        self.picker = None;
+    }
+
+    /// Ask the event loop to move to the next configured account.
+    pub fn request_account_switch(&mut self) {
+        self.switch_requested = true;
+    }
+
+    /// Consume a pending account switch.
+    pub fn take_account_switch(&mut self) -> bool {
+        std::mem::take(&mut self.switch_requested)
+    }
+
+    /// Re-price positions from fresh mark prices.
+    ///
+    /// Uses the venue's own formula — the price move times the signed size — so
+    /// a short gains when the mark falls.
+    fn apply_marks(&mut self, marks: &[(String, f64)]) {
+        let mut changed = false;
+        for position in &mut self.positions {
+            let Some((_, mark)) = marks.iter().find(|(symbol, _)| *symbol == position.symbol)
+            else {
+                continue;
+            };
+
+            let signed_size = match position.side {
+                PositionSide::Long => position.size,
+                PositionSide::Short => -position.size,
+            };
+            position.mark_price = *mark;
+            position.unrealized_pnl = (*mark - position.entry_price) * signed_size;
+            position.notional = mark * signed_size;
+            changed = true;
+        }
+
+        if changed {
+            // The table may be ordered by a value that just moved.
+            self.resort_keeping_selection();
+        }
     }
 
     /// Ask the event loop to exit.
@@ -1129,6 +1200,109 @@ mod tests {
             600_000,
             "a longer base tolerance still wins"
         );
+    }
+
+    #[test]
+    fn mark_prices_reprice_positions_with_the_venues_formula() {
+        let mut long = position("AAAUSDT", 1.0, 2.0);
+        long.entry_price = 100.0;
+        let mut short = position("BBBUSDT", -1.0, 3.0);
+        short.entry_price = 100.0;
+        let mut app = app_with(vec![long, short]);
+
+        app.apply(Update::Marks(vec![
+            ("AAAUSDT".to_owned(), 110.0),
+            ("BBBUSDT".to_owned(), 110.0),
+            ("UNKNOWNUSDT".to_owned(), 1.0),
+        ]));
+
+        let long = app
+            .positions
+            .iter()
+            .find(|p| p.symbol == "AAAUSDT")
+            .expect("long survives");
+        assert_eq!(long.mark_price, 110.0);
+        assert_eq!(long.unrealized_pnl, 20.0, "(110-100) * 2 contracts");
+        assert_eq!(long.notional, 220.0);
+
+        let short = app
+            .positions
+            .iter()
+            .find(|p| p.symbol == "BBBUSDT")
+            .expect("short survives");
+        assert_eq!(
+            short.unrealized_pnl, -30.0,
+            "(110-100) * -3 contracts: a short loses when the mark rises"
+        );
+        assert_eq!(short.notional, -330.0);
+    }
+
+    #[test]
+    fn repricing_keeps_the_table_ordered_and_the_selection_intact() {
+        // Both are longs (the helper derives the side from the PnL sign), with
+        // AAA starting behind BBB.
+        let mut rising = position("AAAUSDT", 10.0, 2.0);
+        rising.entry_price = 100.0;
+        let mut falling = position("BBBUSDT", 50.0, 2.0);
+        falling.entry_price = 100.0;
+        let mut app = app_with(vec![rising, falling]);
+        app.select_last();
+        let selected = app.selected_position().map(|p| p.symbol.clone());
+        assert_eq!(selected.as_deref(), Some("AAAUSDT"));
+
+        // AAA jumps ahead of BBB.
+        app.apply(Update::Marks(vec![("AAAUSDT".to_owned(), 200.0)]));
+
+        assert_eq!(
+            app.positions.first().map(|p| p.symbol.as_str()),
+            Some("AAAUSDT"),
+            "the table re-sorts on the column it is ordered by"
+        );
+        assert_eq!(
+            app.selected_position().map(|p| p.symbol.as_str()),
+            Some("AAAUSDT"),
+            "the selected contract stays selected"
+        );
+    }
+
+    #[test]
+    fn switching_accounts_clears_every_feed() {
+        let mut app = picker_app();
+        app.set_positions(vec![position("AAAUSDT", 1.0, 1.0)]);
+        app.apply(Update::Account(Box::new(crate::venue::AccountSnapshot {
+            balances: Vec::new(),
+            wallet_balance: 1.0,
+            equity: 1.0,
+            unrealized_pnl: 0.0,
+            available_balance: 1.0,
+            initial_margin: 0.0,
+            maintenance_margin: 0.0,
+        })));
+        app.focus_chart("AAAUSDT".to_owned());
+
+        app.begin_account("Paper".to_owned(), VenueId::BinanceFutures);
+
+        assert_eq!(
+            app.account_label, "Paper",
+            "the header names the new account"
+        );
+        assert!(app.positions.is_empty(), "old positions are dropped");
+        assert!(app.account.is_none(), "old balances are dropped");
+        assert!(app.chart_symbol().is_none(), "the chart forgets its target");
+        assert!(app.effective_symbol().is_none());
+        assert!(app.symbols.is_empty(), "the contract list is refetched");
+        assert!(!app.picker_is_open(), "an open picker is closed");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn an_account_switch_is_requested_once_and_consumed_once() {
+        let mut app = app_with(Vec::new());
+        assert!(!app.take_account_switch(), "nothing pending by default");
+
+        app.request_account_switch();
+        assert!(app.take_account_switch(), "the request is delivered");
+        assert!(!app.take_account_switch(), "and only once");
     }
 
     #[test]

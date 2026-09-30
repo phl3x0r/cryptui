@@ -4,6 +4,7 @@
 //! talks to exchanges through [`Venue`] and the domain types defined here.
 
 pub mod binance_futures;
+pub mod fixture;
 
 use std::fmt;
 use std::future::Future;
@@ -151,7 +152,7 @@ impl fmt::Display for IntervalParseError {
 impl std::error::Error for IntervalParseError {}
 
 /// A tradable contract as advertised by the venue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Symbol {
     /// Venue symbol, for example `BTCUSDT`.
     pub name: String,
@@ -162,7 +163,7 @@ pub struct Symbol {
 }
 
 /// One candle.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct Kline {
     /// Opening time, in milliseconds since the UNIX epoch.
     pub open_time_ms: i64,
@@ -183,7 +184,8 @@ pub struct Kline {
 }
 
 /// Direction of a position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PositionSide {
     /// Long.
     Long,
@@ -201,7 +203,7 @@ impl fmt::Display for PositionSide {
 }
 
 /// An open position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Position {
     /// Contract, for example `BTCUSDT`.
     pub symbol: String,
@@ -226,7 +228,7 @@ pub struct Position {
 }
 
 /// One asset balance.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Balance {
     /// Asset symbol, for example `USDT`.
     pub asset: String,
@@ -237,7 +239,7 @@ pub struct Balance {
 }
 
 /// Account totals plus per-asset balances.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AccountSnapshot {
     /// Balances with a non-zero wallet balance.
     pub balances: Vec<Balance>,
@@ -318,11 +320,13 @@ pub enum VenueError {
     #[error("cannot use this account: {0}")]
     Credentials(String),
 
-    /// Offline fixture accounts are not wired up yet.
-    #[error("fixture accounts are not supported yet (would read {path})")]
-    FixtureUnsupported {
-        /// Fixture the account points at.
+    /// The offline fixture could not be read or understood.
+    #[error("cannot use fixture {path}: {detail}")]
+    Fixture {
+        /// Fixture that was being read.
         path: PathBuf,
+        /// What went wrong.
+        detail: String,
     },
 }
 

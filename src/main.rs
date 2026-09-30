@@ -10,12 +10,12 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use tracing_subscriber::EnvFilter;
 
+use cryptui::accounts::{self, AccountHandle};
 use cryptui::app::{self, RunOptions};
-use cryptui::config::{self, Account, AccountMode, Config};
+use cryptui::config::{self, Config};
 use cryptui::state::{App, Update};
 use cryptui::ui::{self, format};
-use cryptui::venue::binance_futures::BinanceFutures;
-use cryptui::venue::{Interval, Venue, VenueError, VenueId};
+use cryptui::venue::{Interval, Venue};
 
 /// Terminal UI for monitoring crypto exchange accounts (read-only).
 #[derive(Debug, Parser)]
@@ -83,13 +83,6 @@ enum PrintKind {
     Klines,
 }
 
-/// A configured account with a live client attached.
-struct Connected {
-    name: String,
-    label: String,
-    venue: Box<dyn Venue>,
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -127,25 +120,34 @@ async fn main() -> ExitCode {
         };
     }
 
-    let connected = match connect(&cli, &config).await {
-        Ok(connected) => connected,
-        Err(error) => return fail(error),
-    };
-
     if cli.dump_frame {
-        return dump_frame(&cli, &config, connected).await;
+        let (label, venue) = match open(&cli, &config).await {
+            Ok(opened) => opened,
+            Err(error) => return fail(error),
+        };
+        return dump_frame(&cli, &config, label, venue).await;
     }
 
-    tracing::debug!(config = %path.display(), account = %connected.name, "starting the TUI");
+    // Interactive session: hand every configured account to the event loop so it
+    // can switch between them without re-reading the configuration.
+    let handles = match accounts::handles(&config) {
+        Ok(handles) => handles,
+        Err(error) => return fail(error),
+    };
+    if handles.is_empty() {
+        return fail("no accounts configured");
+    }
+
     let options = RunOptions {
-        account_label: connected.label,
-        venue: connected.venue.id(),
+        active: accounts::default_index(&config, &handles),
+        accounts: handles,
         interval: effective_interval(&cli, &config),
         refresh_interval_ms: config.settings().refresh_interval_ms(),
         chart_history: config.settings().chart_history_candles(),
     };
 
-    match app::run(connected.venue, options) {
+    tracing::debug!(config = %path.display(), accounts = options.accounts.len(), "starting the TUI");
+    match app::run(options) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error),
     }
@@ -155,6 +157,42 @@ async fn main() -> ExitCode {
 fn effective_interval(cli: &Cli, config: &Config) -> Interval {
     cli.interval
         .unwrap_or_else(|| config.settings().default_interval())
+}
+
+/// The account named on the command line, or the configured default.
+fn select_account<'a>(
+    cli: &Cli,
+    config: &Config,
+    handles: &'a [AccountHandle],
+) -> Result<&'a AccountHandle, String> {
+    match &cli.account {
+        Some(name) => handles
+            .iter()
+            .find(|handle| handle.name() == name)
+            .ok_or_else(|| format!("no account named `{name}` in the configuration")),
+        None => {
+            let index = accounts::default_index(config, handles);
+            handles
+                .get(index)
+                .ok_or_else(|| "no accounts configured".to_owned())
+        }
+    }
+}
+
+/// Connect the selected account and synchronise its clock.
+///
+/// Returns the label the UI shows and the ready client.
+async fn open(cli: &Cli, config: &Config) -> Result<(String, Box<dyn Venue>), String> {
+    let handles = accounts::handles(config).map_err(|error| error.to_string())?;
+    let handle = select_account(cli, config, &handles)?;
+
+    let venue = handle.connect().map_err(|error| error.to_string())?;
+    venue
+        .sync()
+        .await
+        .map_err(|error| format!("{}: {error}", handle.name()))?;
+
+    Ok((handle.label().to_owned(), venue))
 }
 
 /// Print the effective configuration. Credentials are represented by
@@ -183,62 +221,20 @@ fn print_summary(path: &Path, config: &Config) {
     }
 }
 
-/// Build the venue client for one configured account.
-fn venue_for(name: &str, account: &Account) -> Result<Box<dyn Venue>, VenueError> {
-    match account.mode(name) {
-        Ok(AccountMode::Api { testnet }) => match account.venue() {
-            VenueId::BinanceFutures => {
-                let api_key = account.api_key().cloned().ok_or_else(|| {
-                    VenueError::Credentials(format!("account `{name}` has no `api_key`"))
-                })?;
-                let api_secret = account.api_secret().cloned().ok_or_else(|| {
-                    VenueError::Credentials(format!("account `{name}` has no `api_secret`"))
-                })?;
-                Ok(Box::new(BinanceFutures::new(api_key, api_secret, testnet)?))
-            }
-        },
-        Ok(AccountMode::Fixture { path }) => Err(VenueError::FixtureUnsupported { path }),
-        Err(error) => Err(VenueError::Credentials(error.to_string())),
-    }
-}
-
-/// Resolve the account to read from, connect, and synchronise the clock.
-async fn connect(cli: &Cli, config: &Config) -> Result<Connected, String> {
-    let name = cli
-        .account
-        .clone()
-        .unwrap_or_else(|| config.default_account().to_owned());
-    let account = config
-        .account(&name)
-        .ok_or_else(|| format!("no account named `{name}` in the configuration"))?;
-
-    let venue = venue_for(&name, account).map_err(|error| error.to_string())?;
-    venue
-        .sync()
-        .await
-        .map_err(|error| format!("{name}: {error}"))?;
-
-    Ok(Connected {
-        name,
-        label: account.label().to_owned(),
-        venue,
-    })
-}
-
 /// `--dump-frame`: fetch real data, render one frame, and exit.
-async fn dump_frame(cli: &Cli, config: &Config, connected: Connected) -> ExitCode {
-    let positions = match connected.venue.positions().await {
+async fn dump_frame(cli: &Cli, config: &Config, label: String, venue: Box<dyn Venue>) -> ExitCode {
+    let positions = match venue.positions().await {
         Ok(positions) => positions,
         Err(error) => return fail(error),
     };
-    let account = match connected.venue.account().await {
+    let account = match venue.account().await {
         Ok(account) => account,
         Err(error) => return fail(error),
     };
 
     let mut state = App::new(
-        connected.label,
-        connected.venue.id(),
+        label,
+        venue.id(),
         effective_interval(cli, config),
         config.settings().refresh_interval_ms(),
     );
@@ -252,8 +248,7 @@ async fn dump_frame(cli: &Cli, config: &Config, connected: Connected) -> ExitCod
     if let Some(symbol) = state.effective_symbol().map(str::to_owned) {
         state.focus_chart(symbol.clone());
         let interval = state.chart_interval();
-        match connected
-            .venue
+        match venue
             .klines(&symbol, interval, config.settings().chart_history_candles())
             .await
         {
@@ -274,21 +269,17 @@ async fn dump_frame(cli: &Cli, config: &Config, connected: Connected) -> ExitCod
 
 /// `--print symbols`
 async fn print_symbols(cli: &Cli, config: &Config) -> ExitCode {
-    let connected = match connect(cli, config).await {
-        Ok(connected) => connected,
+    let (_, venue) = match open(cli, config).await {
+        Ok(opened) => opened,
         Err(error) => return fail(error),
     };
-    let symbols = match connected.venue.symbols().await {
+    let symbols = match venue.symbols().await {
         Ok(symbols) => symbols,
         Err(error) => return fail(error),
     };
 
     let shown = cli.limit as usize;
-    println!(
-        "{} tradable contracts on {}",
-        symbols.len(),
-        connected.venue.id()
-    );
+    println!("{} tradable contracts on {}", symbols.len(), venue.id());
     for symbol in symbols.iter().take(shown) {
         println!(
             "  {:<16} {}/{}",
@@ -304,16 +295,16 @@ async fn print_symbols(cli: &Cli, config: &Config) -> ExitCode {
 
 /// `--print positions`
 async fn print_positions(cli: &Cli, config: &Config) -> ExitCode {
-    let connected = match connect(cli, config).await {
-        Ok(connected) => connected,
+    let (label, venue) = match open(cli, config).await {
+        Ok(opened) => opened,
         Err(error) => return fail(error),
     };
-    let positions = match connected.venue.positions().await {
+    let positions = match venue.positions().await {
         Ok(positions) => positions,
         Err(error) => return fail(error),
     };
 
-    println!("{}: {} open position(s)", connected.name, positions.len());
+    println!("{label}: {} open position(s)", positions.len());
     println!(
         "  {:<16} {:>5} {:>14} {:>12} {:>12} {:>12} {:>16}",
         "symbol", "side", "size", "entry", "mark", "margin", "pnl"
@@ -340,16 +331,16 @@ async fn print_positions(cli: &Cli, config: &Config) -> ExitCode {
 
 /// `--print balances`
 async fn print_balances(cli: &Cli, config: &Config) -> ExitCode {
-    let connected = match connect(cli, config).await {
-        Ok(connected) => connected,
+    let (label, venue) = match open(cli, config).await {
+        Ok(opened) => opened,
         Err(error) => return fail(error),
     };
-    let snapshot = match connected.venue.account().await {
+    let snapshot = match venue.account().await {
         Ok(snapshot) => snapshot,
         Err(error) => return fail(error),
     };
 
-    println!("{} on {}", connected.name, connected.venue.id());
+    println!("{label} on {}", venue.id());
     println!(
         "  wallet {}  equity {}  unrealized {}  available {}  initial margin {}  maintenance margin {}",
         format::money(snapshot.wallet_balance),
@@ -377,12 +368,12 @@ async fn print_klines(cli: &Cli, config: &Config) -> ExitCode {
         return fail("--print klines needs --symbol <SYMBOL>");
     };
 
-    let connected = match connect(cli, config).await {
-        Ok(connected) => connected,
+    let (_, venue) = match open(cli, config).await {
+        Ok(opened) => opened,
         Err(error) => return fail(error),
     };
     let interval = effective_interval(cli, config);
-    let klines = match connected.venue.klines(&symbol, interval, cli.limit).await {
+    let klines = match venue.klines(&symbol, interval, cli.limit).await {
         Ok(klines) => klines,
         Err(error) => return fail(error),
     };
@@ -392,7 +383,7 @@ async fn print_klines(cli: &Cli, config: &Config) -> ExitCode {
         symbol,
         interval,
         klines.len(),
-        connected.venue.id()
+        venue.id()
     );
     for kline in &klines {
         let state = if kline.closed { "" } else { "  (forming)" };
@@ -425,11 +416,10 @@ fn fail(error: impl std::fmt::Display) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Send diagnostics to a log file-friendly stderr.
+/// Send diagnostics to stderr.
 ///
-/// The TUI owns the screen while it runs, so nothing is logged at the default
-/// level during a session; `-v` is for troubleshooting outside the alternate
-/// screen.
+/// The TUI owns the screen while it runs, so the default level is quiet; `-v`
+/// and `$RUST_LOG` are for troubleshooting.
 fn init_tracing(verbosity: u8) {
     let default = match verbosity {
         0 => "warn",

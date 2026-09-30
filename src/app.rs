@@ -16,10 +16,11 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
+use crate::accounts::AccountHandle;
 use crate::chart::Viewport;
 use crate::state::{App, Feed, SortColumn, Update};
 use crate::ui;
-use crate::venue::{Interval, StreamEvent, Venue, VenueId};
+use crate::venue::{Interval, StreamEvent, Venue};
 
 /// How long the loop waits for a key before redrawing and draining updates.
 const TICK: Duration = Duration::from_millis(200);
@@ -39,10 +40,10 @@ const CHART_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Everything the event loop needs from the configuration.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
-    /// Account label shown in the header.
-    pub account_label: String,
-    /// Venue the account talks to.
-    pub venue: VenueId,
+    /// Configured accounts, in configuration order.
+    pub accounts: Vec<AccountHandle>,
+    /// Index of the account to open.
+    pub active: usize,
     /// Candle interval the chart opens with.
     pub interval: Interval,
     /// How often the feeds refresh, in milliseconds.
@@ -56,29 +57,25 @@ pub struct RunOptions {
 /// Must be called from inside a Tokio runtime: the feed polling task is spawned
 /// here. The terminal is restored on the way out, including while unwinding from
 /// a panic.
-pub fn run(venue: Box<dyn Venue>, options: RunOptions) -> io::Result<()> {
-    let venue: Arc<dyn Venue> = Arc::from(venue);
+pub fn run(options: RunOptions) -> io::Result<()> {
     let refresh_interval_ms = options.refresh_interval_ms.max(250);
+    let active = options.active.min(options.accounts.len().saturating_sub(1));
 
+    let first = options
+        .accounts
+        .get(active)
+        .ok_or_else(|| io::Error::other("no accounts configured"))?;
     let mut app = App::new(
-        options.account_label.clone(),
-        options.venue,
+        first.label().to_owned(),
+        first.venue(),
         options.interval,
         refresh_interval_ms,
     );
 
     let (updates_tx, mut updates_rx) = mpsc::channel(16);
-    let (refresh_tx, refresh_rx) = mpsc::channel(1);
-    tokio::spawn(poll(
-        Arc::clone(&venue),
-        Duration::from_millis(refresh_interval_ms),
-        updates_tx.clone(),
-        refresh_rx,
-    ));
-
-    let mut chart = ChartFeed::default();
-    let mut symbols = SymbolsFeed::default();
-    chart.sync(&mut app, &venue, &options, &updates_tx);
+    let mut feeds = Feeds::default();
+    let mut active = active;
+    let mut refresh_tx = feeds.start(first, &mut app, &options, &updates_tx);
 
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -86,15 +83,24 @@ pub fn run(venue: Box<dyn Venue>, options: RunOptions) -> io::Result<()> {
     while !app.should_quit() {
         terminal.draw(|frame| ui::render(frame, &app))?;
         drain(&mut updates_rx, &mut app);
-        chart.sync(&mut app, &venue, &options, &updates_tx);
-        symbols.sync(&app, &venue, &updates_tx);
+        feeds.sync(&mut app, &options, &updates_tx);
+
+        // Switching accounts rebuilds every feed: the previous client's tasks
+        // are aborted so nothing keeps polling the old account.
+        if app.take_account_switch() && options.accounts.len() > 1 {
+            active = (active + 1) % options.accounts.len();
+            tracing::info!(
+                account = options.accounts[active].name(),
+                "switching account"
+            );
+            refresh_tx = feeds.start(&options.accounts[active], &mut app, &options, &updates_tx);
+        }
 
         if event::poll(TICK)? {
             match event::read()? {
                 Event::Key(key) => {
                     handle_key(key, &mut app, &refresh_tx);
-                    chart.sync(&mut app, &venue, &options, &updates_tx);
-                    symbols.sync(&app, &venue, &updates_tx);
+                    feeds.sync(&mut app, &options, &updates_tx);
                 }
                 // The next draw picks up the new size from the backend.
                 Event::Resize(_, _) => {}
@@ -132,6 +138,7 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.request_quit(),
         KeyCode::Char('s') => app.open_picker(),
+        KeyCode::Char('a') => app.request_account_switch(),
         KeyCode::Char('j') | KeyCode::Down => app.move_selection(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_selection(-1),
         KeyCode::Char('g') => app.select_first(),
@@ -217,6 +224,152 @@ impl SymbolsFeed {
             };
             let _ = updates.send(update).await;
         });
+    }
+}
+
+/// Every background feed for the active account.
+///
+/// Account switching tears all of them down and builds them again, which is why
+/// they live behind one owner rather than as loose tasks.
+#[derive(Default)]
+struct Feeds {
+    venue: Option<Arc<dyn Venue>>,
+    poller: Option<tokio::task::JoinHandle<()>>,
+    marks: Option<tokio::task::JoinHandle<()>>,
+    mark_symbols: Vec<String>,
+    chart: ChartFeed,
+    symbols: SymbolsFeed,
+}
+
+impl Feeds {
+    /// Point every feed at a new account and return the channel used to request
+    /// an immediate refresh.
+    fn start(
+        &mut self,
+        handle: &AccountHandle,
+        app: &mut App,
+        options: &RunOptions,
+        updates: &mpsc::Sender<Update>,
+    ) -> mpsc::Sender<()> {
+        self.stop();
+        app.begin_account(handle.label().to_owned(), handle.venue());
+
+        let (refresh_tx, refresh_rx) = mpsc::channel(1);
+
+        match handle.connect() {
+            Ok(venue) => {
+                let venue: Arc<dyn Venue> = Arc::from(venue);
+                let interval = Duration::from_millis(options.refresh_interval_ms.max(250));
+
+                self.poller = Some(tokio::spawn(poll(
+                    Arc::clone(&venue),
+                    interval,
+                    updates.clone(),
+                    refresh_rx,
+                )));
+                self.venue = Some(Arc::clone(&venue));
+                self.chart.sync(app, &venue, options, updates);
+            }
+            Err(error) => {
+                // A broken account must not take the UI down: report it and let
+                // the user switch to another one.
+                tracing::warn!(%error, "account could not be opened");
+                app.apply(Update::Failed {
+                    feed: Feed::Positions,
+                    message: error.to_string(),
+                });
+                app.apply(Update::Failed {
+                    feed: Feed::Account,
+                    message: error.to_string(),
+                });
+                app.apply(Update::Failed {
+                    feed: Feed::Chart,
+                    message: error.to_string(),
+                });
+            }
+        }
+
+        refresh_tx
+    }
+
+    /// Advance the feeds for the current state.
+    fn sync(&mut self, app: &mut App, options: &RunOptions, updates: &mpsc::Sender<Update>) {
+        let Some(venue) = self.venue.clone() else {
+            return;
+        };
+        self.chart.sync(app, &venue, options, updates);
+        self.symbols.sync(app, &venue, updates);
+        self.sync_marks(app, &venue, updates);
+    }
+
+    /// Subscribe to mark prices for exactly the contracts the account holds.
+    fn sync_marks(&mut self, app: &App, venue: &Arc<dyn Venue>, updates: &mpsc::Sender<Update>) {
+        if !venue.supports_streaming() {
+            return;
+        }
+        let symbols: Vec<String> = app
+            .positions
+            .iter()
+            .map(|position| position.symbol.clone())
+            .collect();
+        if symbols == self.mark_symbols {
+            return;
+        }
+
+        if let Some(task) = self.marks.take() {
+            task.abort();
+        }
+        self.mark_symbols = symbols.clone();
+        if symbols.is_empty() {
+            return;
+        }
+
+        tracing::debug!(count = symbols.len(), "subscribing to mark prices");
+        let venue = Arc::clone(venue);
+        let updates = updates.clone();
+        self.marks = Some(tokio::spawn(async move {
+            let (marks_tx, mut marks_rx) = mpsc::unbounded_channel();
+            let feeding = Arc::clone(&venue);
+            let stream = tokio::spawn(async move {
+                if let Err(error) = feeding.follow_marks(symbols, marks_tx).await {
+                    tracing::warn!(%error, "mark-price stream stopped");
+                }
+            });
+
+            while let Some(event) = marks_rx.recv().await {
+                let StreamEvent::Data((symbol, price)) = event else {
+                    continue;
+                };
+                if updates
+                    .send(Update::Marks(vec![(symbol, price)]))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            stream.abort();
+        }));
+    }
+
+    /// Stop every task.
+    fn stop(&mut self) {
+        if let Some(task) = self.poller.take() {
+            task.abort();
+        }
+        if let Some(task) = self.marks.take() {
+            task.abort();
+        }
+        self.chart = ChartFeed::default();
+        self.symbols = SymbolsFeed::default();
+        self.mark_symbols.clear();
+        self.venue = None;
+    }
+}
+
+impl Drop for Feeds {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

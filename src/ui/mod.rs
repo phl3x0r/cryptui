@@ -25,8 +25,8 @@ use crate::state::App;
 
 /// Height of the header, in rows.
 const HEADER_HEIGHT: u16 = 2;
-/// Height of the footer, in rows.
-const FOOTER_HEIGHT: u16 = 2;
+/// Height of the footer, in rows: one metrics line and two hint lines.
+const FOOTER_HEIGHT: u16 = 3;
 /// Smallest useful chart height.
 const MIN_CHART_HEIGHT: u16 = 6;
 /// Bounds for the positions table height.
@@ -243,7 +243,7 @@ pub(crate) mod tests {
     fn footer_shows_account_totals_and_key_hints() {
         let app = sample_app();
         let lines = frame_lines(&app, 120, 40);
-        let footer = &lines[lines.len() - 2..];
+        let footer = &lines[lines.len() - 3..];
 
         assert!(footer[0].contains("Equity"), "metrics line: {}", footer[0]);
         assert!(
