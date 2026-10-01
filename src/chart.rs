@@ -106,6 +106,11 @@ impl Viewport {
         moved
     }
 
+    /// Ask for a different number of candles, within the zoom limits.
+    pub fn set_visible(&mut self, visible: usize) {
+        self.visible = visible.clamp(Self::MIN_VISIBLE, Self::MAX_VISIBLE);
+    }
+
     /// Widen or narrow the window, keeping the left edge where it is.
     ///
     /// A non-finite or non-positive factor is ignored: `NaN.clamp(..)` is `NaN`,

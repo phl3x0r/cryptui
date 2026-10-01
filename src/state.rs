@@ -513,8 +513,40 @@ impl Chart {
     /// Widen or narrow the window.
     pub fn zoom(&mut self, factor: f64) {
         self.viewport.zoom(factor);
+        self.settle_zoom(factor < 1.0);
+
         let width = self.layout().candles;
         self.follow = self.viewport.is_at_end(self.candles.len(), width);
+    }
+
+    /// Step the request on until the pitch moves.
+    ///
+    /// The paper cannot draw any count it is asked for: candles are laid out on a
+    /// pitch of whole cells, so a pane 195 columns wide draws 195 candles at one
+    /// cell each and 97 at two, and a zoom step landing between the two would
+    /// draw exactly the same chart. Each press therefore lands on the next pitch
+    /// in its direction — unless the pane has not said how wide it is, or the
+    /// zoom is already at its limit.
+    fn settle_zoom(&mut self, zooming_in: bool) {
+        if self.columns.get() == 0 {
+            return;
+        }
+        let pitch = self.layout().pitch;
+        let limit = if zooming_in {
+            Viewport::MIN_VISIBLE
+        } else {
+            Viewport::MAX_VISIBLE
+        };
+
+        let mut visible = self.viewport.visible();
+        while self.layout().pitch == pitch && visible != limit {
+            visible = if zooming_in {
+                visible.saturating_sub(1)
+            } else {
+                visible + 1
+            };
+            self.viewport.set_visible(visible);
+        }
     }
 
     /// Jump back to the newest candle and follow it again.
@@ -1539,6 +1571,67 @@ mod tests {
         app.set_chart_symbol("ZZZUSDT".to_owned());
         app.chart.reset("ZZZUSDT".to_owned(), Interval::M15);
         assert!(app.chart_position().is_none());
+    }
+
+    #[test]
+    fn every_zoom_press_changes_what_is_drawn() {
+        let mut app = app_with(Vec::new());
+        app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "AAAUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: (0..300)
+                .map(|index| crate::venue::Kline {
+                    open_time_ms: index * 900_000,
+                    open: 100.0 + index as f64,
+                    high: 101.0 + index as f64,
+                    low: 99.0 + index as f64,
+                    close: 100.0 + index as f64,
+                    volume: 1.0,
+                    close_time_ms: index * 900_000 + 899_999,
+                    closed: true,
+                })
+                .collect(),
+        });
+        // A 195-column pane draws 195 candles at a pitch of one cell and 97 at
+        // two: a zoom step landing between the two would draw exactly the same
+        // chart, which is what made the key look broken.
+        app.chart.set_columns(195);
+
+        let mut counts = vec![app.chart.visible().len()];
+        for _ in 0..12 {
+            app.zoom_chart(0.8);
+            counts.push(app.chart.visible().len());
+        }
+
+        assert!(
+            counts.windows(2).filter(|pair| pair[0] != pair[1]).count() >= 4,
+            "zooming in has several real levels: {counts:?}"
+        );
+        for pair in counts.windows(2) {
+            if pair[0] == pair[1] {
+                assert!(
+                    pair[0] <= 25,
+                    "only the deepest zoom may draw the same chart twice: {counts:?}"
+                );
+            } else {
+                assert!(pair[1] < pair[0], "zooming in draws fewer: {counts:?}");
+            }
+        }
+
+        let mut out = vec![app.chart.visible().len()];
+        for _ in 0..12 {
+            app.zoom_chart(1.25);
+            out.push(app.chart.visible().len());
+        }
+
+        for pair in out.windows(2) {
+            if pair[0] == pair[1] {
+                assert_eq!(pair[0], 195, "the pane is full: {out:?}");
+            } else {
+                assert!(pair[1] > pair[0], "zooming out draws more: {out:?}");
+            }
+        }
     }
 
     #[test]

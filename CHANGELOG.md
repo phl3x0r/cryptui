@@ -22,11 +22,18 @@ All notable changes to this project are documented here. The format follows
   body was several cells wide.
 - Wicks sit on the middle of their bar. They were drawn one dot in from the bar's
   left edge whatever the bar's width, so a wide bar carried a wick near one side.
-  A wick is now as wide as the grid allows it to be centred: a whole cell on the
-  middle of an odd body (and the full width of a one-cell bar, where a thinner
-  wick would sit half a dot off), or a single dot just left of the middle on an
-  even one, which the dot grid cannot centre. Where the bars have no daylight
-  between them the wick stays one dot, or it would only thicken the block.
+  A wick is now as wide as the grid allows it to be centred, and no wider than it
+  must be to stay visible: a whole cell on the middle of an odd body of three
+  cells or more, and a single dot otherwise — a dot grid cannot centre a wick on
+  a one-cell bar, but a full-width wick there would be indistinguishable from the
+  bar itself, which is worse than half a dot off centre.
+- Every zoom press changes what is drawn. Candles are laid out on a pitch of
+  whole cells, so a pane 195 columns wide draws 195 candles at one cell each and
+  97 at two; a zoom step landing between the two drew exactly the same chart, so
+  the key appeared to do nothing until it crossed the next boundary. A press now
+  settles on the next pitch in its direction, and at the two ends of the zoom
+  range — where the pane cannot show more, or the pitch cannot grow — it says so
+  by leaving the chart alone.
 
 ## [0.1.3] - 2026-10-01
 

@@ -300,15 +300,14 @@ impl Slots {
     ///
     /// A wick is centred on its body, and as wide as the grid allows.
     ///
-    /// A whole cell of wick lands exactly on the middle of an odd body, and that
-    /// is also the only width available to a one-cell bar — where a thinner wick
-    /// would sit a half-dot off the middle, which is what made the bars look
-    /// lopsided. Where the bars have no daylight between them, though, a
-    /// full-width wick would only thicken the block, so there it stays one dot.
+    /// A whole cell of wick lands exactly on the middle of an odd body, which is
+    /// the widest a wick can be and still be centred. A one-cell bar has no such
+    /// cell to spare: a wick its own width would be invisible, so it is a single
+    /// dot instead — half a dot off the middle, which is the closest a two-dot
+    /// bar can be marked.
     fn wick_of(&self, index: usize) -> (f64, f64) {
         let body = self.layout.body;
-        let centred = body % 2 == 1 && (body > 1 || self.layout.pitch > 1);
-        let dots = if centred { 2.0 } else { 1.0 };
+        let dots = if body % 2 == 1 && body > 1 { 2.0 } else { 1.0 };
         let left = 2.0 * f64::from(self.layout.cells(index).start) + f64::from(body) - 1.0;
         (left * self.dot, (dots - 1.0) * self.dot)
     }
@@ -740,6 +739,14 @@ mod tests {
                         (wick_centre - body_centre).abs() <= 0.5,
                         "{layout:?}: wick centre {wick_centre} against body centre {body_centre}"
                     );
+
+                    if layout.body == 1 {
+                        let wick_dots = wick_right - wick_left + 1.0;
+                        assert!(
+                            wick_dots < 2.0,
+                            "{layout:?}: a one-cell bar's wick is as wide as the bar, so it                              cannot be told from it"
+                        );
+                    }
                 }
             }
         }
