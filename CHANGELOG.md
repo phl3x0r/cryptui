@@ -20,6 +20,13 @@ All notable changes to this project are documented here. The format follows
   no room for daylight and the bars touch, which is the one case no layout can
   avoid. Bodies are filled rather than outlined, which only showed at all once a
   body was several cells wide.
+- Wicks sit on the middle of their bar. They were drawn one dot in from the bar's
+  left edge whatever the bar's width, so a wide bar carried a wick near one side.
+  A wick is now as wide as the grid allows it to be centred: a whole cell on the
+  middle of an odd body (and the full width of a one-cell bar, where a thinner
+  wick would sit half a dot off), or a single dot just left of the middle on an
+  even one, which the dot grid cannot centre. Where the bars have no daylight
+  between them the wick stays one dot, or it would only thicken the block.
 
 ## [0.1.3] - 2026-10-01
 

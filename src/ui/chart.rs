@@ -296,9 +296,27 @@ impl Slots {
         (left * self.dot, dots * self.dot)
     }
 
-    /// The wick of candle `index`: a dot inside its body, in canvas x units.
-    fn wick(&self, index: usize) -> f64 {
-        (2.0 * f64::from(self.layout.cells(index).start) + 1.0) * self.dot
+    /// The wick of candle `index`: left edge and width, in canvas x units.
+    ///
+    /// A wick is centred on its body, and as wide as the grid allows.
+    ///
+    /// A whole cell of wick lands exactly on the middle of an odd body, and that
+    /// is also the only width available to a one-cell bar — where a thinner wick
+    /// would sit a half-dot off the middle, which is what made the bars look
+    /// lopsided. Where the bars have no daylight between them, though, a
+    /// full-width wick would only thicken the block, so there it stays one dot.
+    fn wick_of(&self, index: usize) -> (f64, f64) {
+        let body = self.layout.body;
+        let centred = body % 2 == 1 && (body > 1 || self.layout.pitch > 1);
+        let dots = if centred { 2.0 } else { 1.0 };
+        let left = 2.0 * f64::from(self.layout.cells(index).start) + f64::from(body) - 1.0;
+        (left * self.dot, (dots - 1.0) * self.dot)
+    }
+
+    /// The candle's centre, in canvas x units.
+    fn centre(&self, index: usize) -> f64 {
+        let body = f64::from(self.layout.body);
+        (2.0 * f64::from(self.layout.cells(index).start) + body - 0.5) * self.dot
     }
 }
 
@@ -307,13 +325,8 @@ fn draw_candles(context: &mut Context, candles: &[Kline], slots: &Slots, rows: R
     for (index, candle) in candles.iter().enumerate() {
         let color = candle_color(candle);
         let (x, width) = slots.body_of(index);
-        context.draw(&CanvasLine::new(
-            slots.wick(index),
-            candle.low,
-            slots.wick(index),
-            candle.high,
-            color,
-        ));
+        let (wick, wick_width) = slots.wick_of(index);
+        rows.fill(context, wick, wick_width, candle.low, candle.high, color);
 
         let (bottom, top) = (candle.open.min(candle.close), candle.open.max(candle.close));
         if top - bottom <= f64::EPSILON {
@@ -368,7 +381,7 @@ fn draw_averages(context: &mut Context, chart: &Chart, slots: &Slots) {
     for (index, color) in AVERAGE_COLORS.into_iter().enumerate() {
         let values = chart.visible_average(index);
         // Follows the candle centres, so the line crosses the bars it describes.
-        let x = |position: usize| slots.wick(position);
+        let x = |position: usize| slots.centre(position);
         let mut previous: Option<(f64, f64)> = None;
         for (position, value) in values.iter().enumerate() {
             match (previous, value) {
@@ -523,7 +536,8 @@ mod tests {
     };
     use ratatui::layout::Rect;
 
-    use super::{AVERAGE_COLORS, axis_row, theme};
+    use super::{AVERAGE_COLORS, Slots, axis_row, theme};
+    use crate::chart::CandleLayout;
 
     /// The chart panel's title row, where the overlay legend lives.
     ///
@@ -697,6 +711,37 @@ mod tests {
                 gaps.iter().all(|gap| *gap == gaps[0]),
                 "zoom {zoom}: and evenly spaced: {gaps:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_wick_is_centred_on_its_bar() {
+        for columns in [40u16, 95, 195, 240] {
+            for requested in [20usize, 33, 50, 80, 120] {
+                let layout = CandleLayout::fit(Some(columns), requested);
+                let slots = Slots::of(layout, columns, requested as f64);
+
+                for index in [0, 1, layout.candles / 2, layout.candles - 1] {
+                    let cells = layout.cells(index);
+                    let left = 2.0 * f64::from(cells.start);
+                    let right = 2.0 * f64::from(cells.end) - 1.0;
+                    let (wick, wick_width) = slots.wick_of(index);
+                    let wick_left = wick / slots.dot;
+                    let wick_right = (wick + wick_width) / slots.dot;
+
+                    let slack = 1e-9; // dot positions are floats by the time they are drawn
+                    assert!(
+                        wick_left >= left - slack && wick_right <= right + slack,
+                        "{layout:?}: the wick leaves its bar"
+                    );
+                    let body_centre = (left + right) / 2.0;
+                    let wick_centre = (wick_left + wick_right) / 2.0;
+                    assert!(
+                        (wick_centre - body_centre).abs() <= 0.5,
+                        "{layout:?}: wick centre {wick_centre} against body centre {body_centre}"
+                    );
+                }
+            }
         }
     }
 
