@@ -27,6 +27,9 @@ All notable changes to this project are documented here. The format follows
   cells or more, and a single dot otherwise — a dot grid cannot centre a wick on
   a one-cell bar, but a full-width wick there would be indistinguishable from the
   bar itself, which is worse than half a dot off centre.
+- `+` magnifies the chart and `-` pulls back, the way the symbols read
+  everywhere else. They were the other way round, so `+` showed more candles and
+  `-` fewer.
 - Every zoom press changes what is drawn. Candles are laid out on a pitch of
   whole cells, so a pane 195 columns wide draws 195 candles at one cell each and
   97 at two; a zoom step landing between the two drew exactly the same chart, so

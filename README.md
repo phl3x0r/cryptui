@@ -124,7 +124,7 @@ synthetic — never record a real account into a repository.
 | `,` / `.` | Cycle the sort column |
 | `R` | Reverse the sort order |
 | `h` / `l`, `←` / `→` | Pan the chart into history / back towards now |
-| `+` / `-` | Zoom the chart out / in |
+| `+` / `-` | Zoom the chart in / out |
 | `f` | Follow the newest candle again |
 | `m` | Show or hide the moving averages |
 | `p` | Show or hide the entry-price line of a held position |

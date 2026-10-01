@@ -190,8 +190,10 @@ fn handle_key(key: KeyEvent, app: &mut App, refresh: &mpsc::Sender<()>) {
         KeyCode::Char('[') => app.change_interval(false),
         KeyCode::Left | KeyCode::Char('h') => app.pan_chart(-(Viewport::PAN_STEP as isize)),
         KeyCode::Right | KeyCode::Char('l') => app.pan_chart(Viewport::PAN_STEP as isize),
-        KeyCode::Char('+') | KeyCode::Char('=') => app.zoom_chart(1.25),
-        KeyCode::Char('-') | KeyCode::Char('_') => app.zoom_chart(0.8),
+        // `+` magnifies — fewer candles, wider — and `-` pulls back to more of
+        // them, which is what the symbols mean everywhere else.
+        KeyCode::Char('+') | KeyCode::Char('=') => app.zoom_chart(0.8),
+        KeyCode::Char('-') | KeyCode::Char('_') => app.zoom_chart(1.25),
         KeyCode::Char('f') => app.follow_chart(),
         KeyCode::Char('m') => app.toggle_averages(),
         KeyCode::Char('n') => app.toggle_size_units(),
@@ -824,6 +826,47 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode, refresh: &mpsc::Sender<()>) {
         handle_key(KeyEvent::new(code, KeyModifiers::NONE), app, refresh);
+    }
+
+    #[test]
+    fn plus_magnifies_and_minus_pulls_back() {
+        let (refresh, _rx) = mpsc::channel(1);
+        let mut app = app();
+        app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
+        app.apply(crate::state::Update::History {
+            symbol: "AAAUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: (0..300)
+                .map(|index| crate::venue::Kline {
+                    open_time_ms: index * 900_000,
+                    open: 100.0 + index as f64,
+                    high: 101.0 + index as f64,
+                    low: 99.0 + index as f64,
+                    close: 100.0 + index as f64,
+                    volume: 1.0,
+                    close_time_ms: index * 900_000 + 899_999,
+                    closed: true,
+                })
+                .collect(),
+        });
+        // How wide the pane is decides what a zoom press can draw.
+        app.chart.set_columns(195);
+        let before = app.chart.visible().len();
+
+        press(&mut app, KeyCode::Char('+'), &refresh);
+        assert!(
+            app.chart.visible().len() < before,
+            "`+` magnifies: {} candles, was {before}",
+            app.chart.visible().len()
+        );
+
+        let magnified = app.chart.visible().len();
+        press(&mut app, KeyCode::Char('-'), &refresh);
+        assert!(
+            app.chart.visible().len() > magnified,
+            "`-` pulls back: {} candles, was {magnified}",
+            app.chart.visible().len()
+        );
     }
 
     #[test]
