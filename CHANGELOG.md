@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-01
+
+### Added
+
+- An account panel beside the chart on screens wide enough to keep the whole
+  positions table: margin ratio, maintenance margin, equity, unrealised PnL,
+  position value, actual leverage, the account mode (multi-assets or
+  single-asset) and every non-zero balance. Narrower screens drop it rather than
+  squeeze the table, and the footer line carries the same summary at every width.
+
 ## [0.1.2] - 2026-09-30
 
 ### Added
@@ -22,11 +32,6 @@ All notable changes to this project are documented here. The format follows
 - The panel names the assets the income arrived in when they are not a dollar
   stablecoin, so a credits or multi-assets account is not read as a plain USDⓈ
   one.
-- An account panel beside the chart on screens wide enough to keep the whole
-  positions table: margin ratio, maintenance margin, equity, unrealised PnL,
-  position value, actual leverage, the account mode and every non-zero balance.
-  Narrower screens drop it rather than squeeze the table, and the footer line
-  carries the same summary at every width.
 
 ### Fixed
 
@@ -130,7 +135,8 @@ The first release: read-only monitoring of Binance USDⓈ-M futures accounts.
   on. All futures REST endpoints and the spot stream work, so the application
   polls instead. See the troubleshooting section of the README.
 
-[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/phl3x0r/cryptui/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.3
 [0.1.2]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.2
 [0.1.1]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.1
 [0.1.0]: https://github.com/phl3x0r/cryptui/releases/tag/v0.1.0
