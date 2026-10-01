@@ -9,7 +9,7 @@ use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::auth::now_ms;
-use crate::chart::MOVING_AVERAGE_WINDOWS;
+use crate::chart::{CandleLayout, MOVING_AVERAGE_WINDOWS};
 use crate::state::{App, Chart};
 use crate::venue::Kline;
 
@@ -25,11 +25,6 @@ const DOTS_PER_CELL_ROW: usize = 4;
 /// How far the price range may stretch to keep the entry line visible, as a
 /// multiple of the visible candle range.
 const ENTRY_RANGE_LIMIT: f64 = 3.0;
-/// Fraction of the space between candles that a body fills.
-///
-/// The rest is daylight, which is what keeps the bars from reading as one block
-/// and leaves room for the moving averages to show between them.
-const BODY_WIDTH_FRACTION: f64 = 0.7;
 /// Colour of each moving-average line, in [`MOVING_AVERAGE_WINDOWS`] order.
 const AVERAGE_COLORS: [Color; MOVING_AVERAGE_WINDOWS.len()] =
     [Color::Yellow, Color::LightMagenta, Color::LightBlue];
@@ -55,12 +50,17 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // The pane tells the chart how many candles it can draw before anything is
+    // measured from them: an even pitch may fit a few more or fewer than the
+    // viewport asked for, and the bounds have to follow what is drawn.
+    let plot_width = inner.width - AXIS_WIDTH;
+    chart.set_columns(plot_width);
+
     let Some((low, high)) = chart.price_bounds_with(entry, ENTRY_RANGE_LIMIT) else {
         return;
     };
     let (low, high) = pad_bounds(low, high);
 
-    let plot_width = inner.width - AXIS_WIDTH;
     let columns = Layout::horizontal([
         Constraint::Length(plot_width),
         Constraint::Length(AXIS_WIDTH),
@@ -79,13 +79,9 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let panes = Layout::vertical(constraints).split(columns[0]);
     let axis_panes = Layout::vertical(constraints).split(columns[1]);
 
-    // The viewport is told what the pane can hold, so it never hands over more
-    // candles than columns to draw them in.
-    chart.set_columns(plot_width);
-
     let candles = chart.visible();
     let count = candles.len().max(1) as f64;
-    let slots = Slots::new(plot_width, candles.len(), count);
+    let slots = Slots::of(chart.layout(), plot_width, count);
     let rows = Rows::new(low, high, panes[0].height);
     let last_close = chart.last_close();
 
@@ -266,77 +262,43 @@ fn draw_last_price(context: &mut Context, last_close: Option<f64>, count: f64) {
 
 /// Where each candle sits across the plot, in canvas x units.
 ///
-/// A Braille cell holds two dots and one colour, and whatever is painted last
-/// takes the cell: two candles that share one erase each other, which is what
-/// makes a dense chart look like bars of uneven width with gaps that flicker as
-/// it scrolls. Bodies are therefore placed on whole cells — one cell each when
-/// the chart is tight, more when it is zoomed in — so every bar is the same
-/// width and no two of them share a cell.
+/// The cells come from the chart's [`Layout`]; this only converts them to the
+/// units the canvas speaks. The conversion is done per **dot** rather than per
+/// cell because the canvas grid is `2 * columns - 1` dots wide, so a cell is not
+/// a whole number of x units and anything computed per cell drifts across the
+/// pane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Slots {
-    /// Canvas x units per dot — the grid the canvas actually rounds to, two dots
-    /// to a cell. Positions are built here rather than in cells because the grid
-    /// is `2 * columns - 1` dots wide, so a cell is not exactly a whole number of
-    /// x units and anything computed per cell drifts across the pane.
+    /// The cells each candle occupies.
+    layout: CandleLayout,
+    /// Canvas x units per dot.
     dot: f64,
-    /// Cells between the left edges of neighbouring bodies.
-    step: f64,
-    /// Cells in a body.
-    body: f64,
 }
 
 impl Slots {
-    /// Lay out `candles` bars across `columns` cells of a domain `width` wide.
-    ///
-    /// `candles` must not exceed `columns`: the chart tells the viewport how many
-    /// candles it can draw, so more of them than cells never reaches here.
-    fn new(columns: u16, candles: usize, width: f64) -> Self {
-        let columns = f64::from(columns).max(1.0);
-        let candles = candles.max(1) as f64;
-        let pitch = columns / candles;
-
-        // Whole cells, so a body never straddles one, and never wider than the
-        // space between candles, so two bodies never meet in the same cell.
-        let body = (pitch * BODY_WIDTH_FRACTION)
-            .round()
-            .clamp(1.0, pitch.floor().max(1.0));
-        let span = (columns - body).max(0.0);
-        let step = if candles > 1.0 {
-            span / (candles - 1.0)
-        } else {
-            0.0
-        };
-
+    /// Place `layout` across a domain `width` wide.
+    fn of(layout: CandleLayout, columns: u16, width: f64) -> Self {
+        let dots = 2.0 * f64::from(columns) - 1.0;
         Self {
-            dot: width / (2.0 * columns - 1.0).max(1.0),
-            step,
-            body,
+            layout,
+            dot: width / dots.max(1.0),
         }
-    }
-
-    /// Cells the body of candle `index` starts at.
-    fn start(&self, index: usize, candles: usize) -> f64 {
-        let start = if candles > 1 {
-            index as f64 * self.step
-        } else {
-            self.step
-        };
-        start.round()
     }
 
     /// The body of candle `index`: left edge and width, in canvas x units.
     ///
-    /// Both ends land exactly on dots, and the last one is included, so the body
-    /// covers its own cells and not one dot of the next.
-    fn body_of(&self, index: usize, candles: usize) -> (f64, f64) {
-        let left = 2.0 * self.start(index, candles);
-        let dots = 2.0 * self.body - 1.0;
+    /// Both ends land exactly on dots, and the last one is included, so a body
+    /// covers its own cells and never one dot of the next.
+    fn body_of(&self, index: usize) -> (f64, f64) {
+        let cells = self.layout.cells(index);
+        let left = 2.0 * f64::from(cells.start);
+        let dots = 2.0 * f64::from(cells.end - cells.start) - 1.0;
         (left * self.dot, dots * self.dot)
     }
 
     /// The wick of candle `index`: a dot inside its body, in canvas x units.
-    fn wick(&self, index: usize, candles: usize) -> f64 {
-        (2.0 * self.start(index, candles) + 1.0) * self.dot
+    fn wick(&self, index: usize) -> f64 {
+        (2.0 * f64::from(self.layout.cells(index).start) + 1.0) * self.dot
     }
 }
 
@@ -344,11 +306,11 @@ impl Slots {
 fn draw_candles(context: &mut Context, candles: &[Kline], slots: &Slots, rows: Rows) {
     for (index, candle) in candles.iter().enumerate() {
         let color = candle_color(candle);
-        let (x, width) = slots.body_of(index, candles.len());
+        let (x, width) = slots.body_of(index);
         context.draw(&CanvasLine::new(
-            slots.wick(index, candles.len()),
+            slots.wick(index),
             candle.low,
-            slots.wick(index, candles.len()),
+            slots.wick(index),
             candle.high,
             color,
         ));
@@ -406,7 +368,7 @@ fn draw_averages(context: &mut Context, chart: &Chart, slots: &Slots) {
     for (index, color) in AVERAGE_COLORS.into_iter().enumerate() {
         let values = chart.visible_average(index);
         // Follows the candle centres, so the line crosses the bars it describes.
-        let x = |position: usize| slots.wick(position, values.len());
+        let x = |position: usize| slots.wick(position);
         let mut previous: Option<(f64, f64)> = None;
         for (position, value) in values.iter().enumerate() {
             match (previous, value) {
@@ -425,7 +387,7 @@ fn draw_averages(context: &mut Context, chart: &Chart, slots: &Slots) {
 /// Draw volumes as bars from the baseline of the volume pane.
 fn draw_volumes(context: &mut Context, candles: &[Kline], slots: &Slots, rows: Rows) {
     for (index, candle) in candles.iter().enumerate() {
-        let (x, width) = slots.body_of(index, candles.len());
+        let (x, width) = slots.body_of(index);
         rows.fill(context, x, width, 0.0, candle.volume, candle_color(candle));
     }
 }
@@ -561,7 +523,7 @@ mod tests {
     };
     use ratatui::layout::Rect;
 
-    use super::{AVERAGE_COLORS, Slots, axis_row, theme};
+    use super::{AVERAGE_COLORS, axis_row, theme};
 
     /// The chart panel's title row, where the overlay legend lives.
     ///
@@ -618,10 +580,17 @@ mod tests {
     #[test]
     fn the_price_axis_labels_the_range() {
         let app = chart_app();
+        // Rendered first: the pane tells the chart how many candles it can draw,
+        // and the bounds follow from that.
         let text = frame_lines(&app, 140, 40).join("\n");
-        // The axis is padded so candles do not touch the pane edge, so the
-        // labels carry the padded bounds rather than the raw extremes.
-        let (raw_low, raw_high) = app.chart.price_bounds().expect("bounds");
+        // The axis is padded so candles do not touch the pane edge, and widened
+        // to keep the entry line on screen, so the labels carry bounds rather than
+        // the raw extremes.
+        let entry = super::entry_price(&app);
+        let (raw_low, raw_high) = app
+            .chart
+            .price_bounds_with(entry, super::ENTRY_RANGE_LIMIT)
+            .expect("bounds");
         let (low, high) = super::pad_bounds(raw_low, raw_high);
 
         assert!(
@@ -683,39 +652,52 @@ mod tests {
             .collect()
     }
 
-    /// The widths of the runs of columns the bars occupy, in cells.
-    fn bar_widths(app: &App, width: u16, height: u16) -> Vec<usize> {
+    /// The widths of the bars and the gaps between them, in cells.
+    fn bar_widths_and_gaps(app: &App, width: u16, height: u16) -> (Vec<usize>, Vec<usize>) {
         let mut widths: Vec<usize> = Vec::new();
+        let mut gaps: Vec<usize> = Vec::new();
         let mut previous: Option<u16> = None;
+
         for column in bar_columns(app, width, height) {
             match previous {
                 Some(last) if last + 1 == column => {
-                    if let Some(width) = widths.last_mut() {
-                        *width += 1;
-                    }
+                    *widths.last_mut().expect("a run is open") += 1;
                 }
-                _ => widths.push(1),
+                Some(last) => {
+                    gaps.push(usize::from(column - last - 1));
+                    widths.push(1);
+                }
+                None => widths.push(1),
             }
             previous = Some(column);
         }
-        widths
+
+        (widths, gaps)
     }
 
     #[test]
-    fn every_bar_is_the_same_width() {
-        // A Braille cell holds one colour, so a candle that shares a cell with
-        // its neighbour erases part of it: bars used to come out one or two dots
-        // wide depending on where the slot fell.
-        let mut app = chart_app();
-        app.zoom_chart(0.25); // 20 candles across a wide pane: the bars separate
-        let widths = bar_widths(&app, 240, 40);
+    fn every_bar_has_the_same_width_and_the_same_gap_at_every_zoom() {
+        // A Braille cell holds two dots and one colour, so a bar that shares a
+        // cell with its neighbour erases part of it, and a body that is not a
+        // whole number of cells comes out uneven. The chart gives up a few
+        // candles of the count for an even pitch, at every zoom level.
+        for zoom in [0.25, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0] {
+            let mut app = chart_app();
+            app.zoom_chart(zoom);
+            // The tightest pitch leaves no room for daylight, so the bars form
+            // one block; everywhere else they are separated.
+            let (widths, gaps) = bar_widths_and_gaps(&app, 240, 40);
 
-        assert_eq!(widths.len(), 20, "one bar per candle: {widths:?}");
-        assert!(widths[0] > 1, "a bar is more than a dot wide: {widths:?}");
-        assert!(
-            widths.iter().all(|width| *width == widths[0]),
-            "and every bar is the same width: {widths:?}"
-        );
+            assert!(!widths.is_empty(), "zoom {zoom}: bars are drawn");
+            assert!(
+                widths.iter().all(|width| *width == widths[0]),
+                "zoom {zoom}: every bar is one width: {widths:?}"
+            );
+            assert!(
+                gaps.iter().all(|gap| *gap == gaps[0]),
+                "zoom {zoom}: and evenly spaced: {gaps:?}"
+            );
+        }
     }
 
     #[test]
@@ -746,46 +728,6 @@ mod tests {
             tallest >= 3,
             "a filled body paints more than its outline does: {tallest}"
         );
-    }
-
-    #[test]
-    fn bar_slots_are_whole_cells_that_never_overlap() {
-        for (columns, candles) in [
-            (195u16, 80usize),
-            (195, 20),
-            (95, 80),
-            (95, 20),
-            (40, 40),
-            (40, 20),
-            (12, 12),
-            (12, 4),
-        ] {
-            let slots = Slots::new(columns, candles, candles as f64);
-            assert!(
-                slots.body >= 1.0,
-                "{columns}x{candles}: a bar is never thinner than a cell"
-            );
-
-            let mut previous: Option<f64> = None;
-            for index in 0..candles {
-                let start = slots.start(index, candles);
-                assert_eq!(start, start.round(), "{columns}x{candles}: whole cells");
-
-                if let Some(previous) = previous {
-                    assert!(
-                        start - previous >= slots.body,
-                        "{columns}x{candles}: bar {index} shares a cell with the one before it"
-                    );
-                }
-                previous = Some(start);
-            }
-
-            let last = slots.start(candles - 1, candles) + slots.body;
-            assert!(
-                last <= f64::from(columns),
-                "{columns}x{candles}: the last bar ends inside the pane"
-            );
-        }
     }
 
     #[test]

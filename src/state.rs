@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use crate::auth::now_ms;
-use crate::chart::{MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
+use crate::chart::{CandleLayout, MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
 use crate::performance::{CurveMode, EquitySeries, Metrics, Window};
 use crate::venue::{AccountSnapshot, Interval, Kline, Position, PositionSide, Symbol, VenueId};
 
@@ -349,23 +349,29 @@ impl Chart {
     }
 
     /// How many candles could be drawn if nothing were known about the screen.
-    const COLUMNS_UNKNOWN: usize = usize::MAX;
+    const COLUMNS_UNKNOWN: usize = 0;
 
     /// Tell the chart how many columns the price pane has.
     pub fn set_columns(&self, columns: u16) {
-        self.columns.set(usize::from(columns).max(1));
+        self.columns.set(usize::from(columns));
+    }
+
+    /// How the candles are spread across those columns.
+    pub fn layout(&self) -> CandleLayout {
+        let columns = self.columns.get();
+        let columns = u16::try_from(columns).ok().filter(|columns| *columns > 0);
+        CandleLayout::fit(columns, self.viewport.visible())
     }
 
     /// The candles on screen: the window the viewport asked for, narrowed to the
-    /// candles that fit one per column.
+    /// candles that fit across the pane at an even pitch.
     ///
-    /// Zooming out past the width of the pane cannot show more candles than
-    /// there are columns, so the window keeps its right-hand edge and gives up
-    /// its oldest candles instead of drawing several into the same cell.
+    /// Zooming out past the width of the pane cannot show more candles than it
+    /// has room for, so the window keeps its right-hand edge — the live end — and
+    /// gives up its oldest candles instead of drawing two into the same cell.
     fn visible_range(&self) -> Range<usize> {
-        let range = self.viewport.range(self.candles.len());
-        let drawable = range.len().min(self.columns.get());
-        (range.end - drawable)..range.end
+        let width = self.layout().candles;
+        self.viewport.range(self.candles.len(), width)
     }
 
     /// Whether the chart is already pointed at `symbol` with `interval`.
@@ -400,7 +406,8 @@ impl Chart {
         self.candles = candles;
         self.recompute_averages();
         if self.follow {
-            self.viewport.pin_to_end(self.candles.len());
+            let width = self.layout().candles;
+            self.viewport.pin_to_end(self.candles.len(), width);
         }
     }
 
@@ -418,7 +425,8 @@ impl Chart {
 
         self.recompute_averages();
         if self.follow {
-            self.viewport.pin_to_end(self.candles.len());
+            let width = self.layout().candles;
+            self.viewport.pin_to_end(self.candles.len(), width);
         }
     }
 
@@ -496,20 +504,24 @@ impl Chart {
 
     /// Move the window, leaving follow mode when the user steps into history.
     pub fn pan(&mut self, delta: isize) {
-        self.viewport.pan(delta, self.candles.len());
-        self.follow = self.viewport.is_at_end(self.candles.len());
+        let len = self.candles.len();
+        let width = self.layout().candles;
+        self.viewport.pan(delta, len, width);
+        self.follow = self.viewport.is_at_end(len, width);
     }
 
     /// Widen or narrow the window.
     pub fn zoom(&mut self, factor: f64) {
         self.viewport.zoom(factor);
-        self.follow = self.viewport.is_at_end(self.candles.len());
+        let width = self.layout().candles;
+        self.follow = self.viewport.is_at_end(self.candles.len(), width);
     }
 
     /// Jump back to the newest candle and follow it again.
     pub fn follow_end(&mut self) {
         self.follow = true;
-        self.viewport.pin_to_end(self.candles.len());
+        let width = self.layout().candles;
+        self.viewport.pin_to_end(self.candles.len(), width);
     }
 
     /// How long the chart tolerates silence before it counts as stale.
