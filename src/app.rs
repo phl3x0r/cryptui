@@ -1044,6 +1044,7 @@ mod tests {
                     available_balance: 0.0,
                     initial_margin: 0.0,
                     maintenance_margin: 0.0,
+                    multi_assets: None,
                 })
             })
         }

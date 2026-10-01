@@ -54,12 +54,6 @@ fn totals_line(app: &App) -> Line<'static> {
         ));
     };
 
-    let margin_ratio = if account.equity > 0.0 {
-        account.maintenance_margin / account.equity * 100.0
-    } else {
-        0.0
-    };
-
     let mut spans = Vec::new();
     metric(
         &mut spans,
@@ -77,7 +71,7 @@ fn totals_line(app: &App) -> Line<'static> {
     metric(
         &mut spans,
         "Margin ratio",
-        format::percent_plain(margin_ratio),
+        format::percent_plain(account.margin_ratio()),
         None,
     );
     metric(

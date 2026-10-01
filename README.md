@@ -7,7 +7,7 @@ in the spirit of the dense, panel-based trading terminals of the desktop world.
 the order book and additional venues are planned; the venue layer is already
 abstracted behind a trait so a new exchange does not touch UI code.
 
-![cryptui showing the fixture account: a candle chart with moving averages and an entry-price line, above a sortable positions table and an account footer](docs/screenshot.png)
+![cryptui showing the fixture account: a candle chart with moving averages and an entry-price line, above a sortable positions table, an account footer, and the account panel down the right-hand side with its margin ratio, leverage, mode and balances](docs/screenshot.png)
 
 That is the bundled *fixture* account — three synthetic positions — so it
 renders with no network and no credentials. To produce that frame yourself:
@@ -34,6 +34,11 @@ clear && cat frame.ans
   in does not read as a gain: `◆` marks every point where it moved, and `b` swaps
   the index for the raw wallet balance. Each run records today's balance locally
   so longer windows fill in over time.
+- **Account panel** on wide screens: margin ratio, maintenance margin, equity,
+  unrealised PnL, position value, actual leverage, the venue's account mode
+  (multi-assets or single-asset) and every non-zero balance, in a column beside
+  the chart. It is dropped rather than squeezed when the screen cannot also hold
+  the whole positions table, where the footer line carries the same summary.
 - **Size in contracts or in value**: the size column shows the position value in
   USDT by default, and `n` swaps it to contract amounts. Sorting follows
   whichever unit the column is showing.

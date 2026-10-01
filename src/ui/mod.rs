@@ -1,9 +1,11 @@
 //! Layout composition.
 //!
-//! The screen is one column: a two-line header, the chart, the positions table,
-//! and a two-line footer. Panels for order entry and the order book are
+//! A two-line header, the chart, the positions table and a two-line footer, with
+//! the account panel in a right-hand column when the screen is wide enough to
+//! hold it beside a whole table. Panels for order entry and the order book are
 //! deliberately absent until those features exist.
 
+pub(crate) mod account;
 pub(crate) mod chart;
 pub(crate) mod footer;
 pub mod format;
@@ -32,6 +34,11 @@ const FOOTER_HEIGHT: u16 = 3;
 const MIN_CHART_HEIGHT: u16 = 6;
 /// Bounds for the positions table height.
 const POSITIONS_HEIGHT_RANGE: (u16, u16) = (5, 16);
+/// Width of the account panel, in cells.
+const ACCOUNT_WIDTH: u16 = 32;
+/// Narrowest screen that still shows the account panel: the table, then the
+/// panel, with nothing squeezed.
+pub(crate) const ACCOUNT_MIN_WIDTH: u16 = positions::MIN_WIDTH + ACCOUNT_WIDTH;
 
 /// Draw one frame.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -39,6 +46,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     header::render(frame, areas.header, app);
     chart::render(frame, areas.chart, app);
     positions::render(frame, areas.positions, app);
+    if let Some(account) = areas.account {
+        account::render(frame, account, app);
+    }
     footer::render(frame, areas.footer, app);
 
     // Drawn last so they sit above the panels.
@@ -52,6 +62,8 @@ struct Areas {
     chart: Rect,
     positions: Rect,
     footer: Rect,
+    /// The account panel, absent on screens too narrow to hold it.
+    account: Option<Rect>,
 }
 
 /// Divide the screen, giving the chart whatever is left over.
@@ -73,11 +85,34 @@ fn split(area: Rect) -> Areas {
     ])
     .split(area);
 
+    // The account panel is a luxury, not a fixture: it takes a column only when
+    // the positions table still fits beside it in full, and the header and footer
+    // keep the whole width either way. A clipped table next to a clipped panel
+    // would be worse than the summary line the footer already carries.
+    let body = chunks[1].union(chunks[2]);
+    let (body, account) = if area.width >= ACCOUNT_MIN_WIDTH {
+        let columns = Layout::horizontal([
+            Constraint::Min(positions::MIN_WIDTH),
+            Constraint::Length(ACCOUNT_WIDTH),
+        ])
+        .split(body);
+        (columns[0], Some(columns[1]))
+    } else {
+        (body, None)
+    };
+
+    let stack = Layout::vertical([
+        Constraint::Length(chart_height),
+        Constraint::Length(positions_height),
+    ])
+    .split(body);
+
     Areas {
         header: chunks[0],
-        chart: chunks[1],
-        positions: chunks[2],
+        chart: stack[0],
+        positions: stack[1],
         footer: chunks[3],
+        account,
     }
 }
 
@@ -225,6 +260,7 @@ pub(crate) mod tests {
             available_balance: 3_203.16,
             initial_margin: 834.58,
             maintenance_margin: 97.49,
+            multi_assets: Some(false),
         }
     }
 
@@ -344,6 +380,54 @@ pub(crate) mod tests {
             "feed problem is surfaced: {}",
             lines[0]
         );
+    }
+
+    #[test]
+    fn the_positions_table_fits_the_width_it_claims() {
+        // The account panel is shown on the strength of this number, so it has to
+        // be honest: every heading must be visible in exactly this much room.
+        let app = sample_app();
+        let text = frame_lines(&app, super::positions::MIN_WIDTH, 40).join("\n");
+
+        for heading in [
+            "Symbol", "Side", "Notional", "Entry", "Mark", "Margin", "PnL",
+        ] {
+            assert!(
+                text.contains(heading),
+                "`{heading}` does not fit in {} cells: {text}",
+                super::positions::MIN_WIDTH
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_screen_shows_the_account_panel_beside_a_whole_table() {
+        let app = sample_app();
+        let text = frame_lines(&app, super::ACCOUNT_MIN_WIDTH, 40).join("\n");
+
+        assert!(text.contains("┌ Account "), "the panel is drawn: {text}");
+        assert!(text.contains("Margin ratio"), "{text}");
+        assert!(text.contains("Maint. margin"), "{text}");
+        assert!(text.contains("Position value"), "{text}");
+        for heading in ["Symbol", "Notional", "PnL"] {
+            assert!(
+                text.contains(heading),
+                "and the table is whole beside it, `{heading}` missing: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_screen_one_cell_too_narrow_drops_the_panel_rather_than_the_table() {
+        let app = sample_app();
+        let text = frame_lines(&app, super::ACCOUNT_MIN_WIDTH - 1, 40).join("\n");
+
+        assert!(!text.contains("Maint. margin"), "no panel: {text}");
+        assert!(!text.contains("Position value"), "no panel: {text}");
+        assert!(text.contains("Positions ("), "the table is still there");
+        for heading in ["Symbol", "Notional", "PnL"] {
+            assert!(text.contains(heading), "and whole: {text}");
+        }
     }
 
     #[test]

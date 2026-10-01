@@ -234,7 +234,17 @@ pub(crate) fn account(payload: Value) -> Result<AccountSnapshot, String> {
         available_balance: row.available_balance.f64()?,
         initial_margin: row.total_initial_margin.f64()?,
         maintenance_margin: row.total_maint_margin.f64()?,
+        // Not in this payload; `GET /fapi/v1/multiAssetsMargin` answers it.
+        multi_assets: None,
     })
+}
+
+/// `GET /fapi/v1/multiAssetsMargin`
+pub(crate) fn multi_assets(payload: &Value) -> Result<bool, String> {
+    payload
+        .get("multiAssetsMargin")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "multiAssetsMargin missing".to_owned())
 }
 
 /// Candle array rows: `[openTime, open, high, low, close, volume, closeTime, …]`.

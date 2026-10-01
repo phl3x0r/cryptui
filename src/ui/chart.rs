@@ -524,8 +524,12 @@ mod tests {
     }
 
     /// The right-hand axis column of every rendered row.
+    ///
+    /// Rendered just narrow enough that the account panel is not in the column:
+    /// this is about the chart's own axis, which only reaches the screen edge
+    /// when nothing sits beside it.
     fn axis_column(app: &App) -> String {
-        frame_lines(app, 140, 40)
+        frame_lines(app, crate::ui::ACCOUNT_MIN_WIDTH - 1, 40)
             .iter()
             .map(|line| {
                 let reversed: String = line.chars().rev().take(11).collect();

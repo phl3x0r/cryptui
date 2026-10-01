@@ -1644,6 +1644,7 @@ mod tests {
             available_balance: 1.0,
             initial_margin: 0.0,
             maintenance_margin: 0.0,
+            multi_assets: None,
         })));
         app.focus_chart("AAAUSDT".to_owned());
 
@@ -1731,6 +1732,7 @@ mod tests {
             available_balance: 1.0,
             initial_margin: 0.5,
             maintenance_margin: 0.1,
+            multi_assets: None,
         })));
         assert_eq!(app.account.as_ref().map(|a| a.equity), Some(2.0));
         assert!(app.account_feed.last_error.is_none());

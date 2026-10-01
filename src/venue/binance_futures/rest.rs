@@ -115,7 +115,23 @@ impl Venue for BinanceFutures {
     fn account(&self) -> VenueFuture<'_, AccountSnapshot> {
         Box::pin(async move {
             let payload = self.get_json("/fapi/v3/account", None, true).await?;
-            wire::account(payload).map_err(|detail| self.malformed(detail))
+            let mut snapshot = wire::account(payload).map_err(|detail| self.malformed(detail))?;
+
+            // The mode is not part of the account payload, and a monitor that
+            // knows the balances but not the mode is still useful, so a failure
+            // here leaves it unknown rather than failing the whole snapshot.
+            match self
+                .get_json("/fapi/v1/multiAssetsMargin", None, true)
+                .await
+            {
+                Ok(payload) => match wire::multi_assets(&payload) {
+                    Ok(multi_assets) => snapshot.multi_assets = Some(multi_assets),
+                    Err(detail) => tracing::debug!(%detail, "could not read the account mode"),
+                },
+                Err(error) => tracing::debug!(%error, "could not read the account mode"),
+            }
+
+            Ok(snapshot)
         })
     }
 

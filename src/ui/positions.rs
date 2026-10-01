@@ -21,6 +21,24 @@ use super::{format, theme};
 /// the marker for the active column is silently truncated.
 const COLUMN_WIDTHS: [u16; 7] = [16, 7, 13, 12, 12, 12, 20];
 
+/// Width the table needs to show every column: the cells, the space between
+/// them, and the border.
+///
+/// The account panel is shown only when this much room is left beside it, so the
+/// two cannot drift apart.
+pub(crate) const MIN_WIDTH: u16 = {
+    let mut total = 2; // the two border columns
+    let mut index = 0;
+    while index < COLUMN_WIDTHS.len() {
+        total += COLUMN_WIDTHS[index];
+        if index > 0 {
+            total += 1; // column spacing
+        }
+        index += 1;
+    }
+    total
+};
+
 /// Draw the positions table.
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered()

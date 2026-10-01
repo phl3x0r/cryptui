@@ -850,8 +850,15 @@ mod tests {
         let app = panel_app(200, false);
         let text = panel(&app);
 
-        let stamps = text.matches("09-").count() + text.matches("08-").count();
-        assert!(stamps >= 2, "expected date labels, got {stamps}: {text}");
+        // The labels are the first, middle and last observation, whatever month
+        // the suite happens to run in.
+        let series = app.performance().windowed(crate::auth::now_ms());
+        let points = series.points();
+        let middle = points[points.len() / 2].time_ms;
+        for stamp in [points[0].time_ms, middle, points[points.len() - 1].time_ms] {
+            let label = crate::ui::format::day(stamp);
+            assert!(text.contains(&label), "`{label}` missing from: {text}");
+        }
     }
 
     #[test]

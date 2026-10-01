@@ -257,6 +257,27 @@ pub struct AccountSnapshot {
     pub initial_margin: f64,
     /// Maintenance margin currently required.
     pub maintenance_margin: f64,
+    /// Whether the account trades in multi-assets mode.
+    ///
+    /// `None` when the venue did not say: the mode is a separate request from
+    /// the account itself, and a snapshot without it is still a snapshot.
+    #[serde(default)]
+    pub multi_assets: Option<bool>,
+}
+
+impl AccountSnapshot {
+    /// Maintenance margin as a percentage of equity.
+    ///
+    /// The figure the venue calls the margin ratio: how much of the account's
+    /// value the positions would need to be closed at a loss. Zero equity has no
+    /// ratio, so it reports none rather than dividing by it.
+    pub fn margin_ratio(&self) -> f64 {
+        if self.equity > 0.0 {
+            self.maintenance_margin / self.equity * 100.0
+        } else {
+            0.0
+        }
+    }
 }
 
 /// A boxed future, so [`Venue`] stays object-safe while other venues are added.

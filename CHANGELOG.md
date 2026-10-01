@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
 - The panel names the assets the income arrived in when they are not a dollar
   stablecoin, so a credits or multi-assets account is not read as a plain USDⓈ
   one.
+- An account panel beside the chart on screens wide enough to keep the whole
+  positions table: margin ratio, maintenance margin, equity, unrealised PnL,
+  position value, actual leverage, the account mode and every non-zero balance.
+  Narrower screens drop it rather than squeeze the table, and the footer line
+  carries the same summary at every width.
 
 ### Fixed
 
