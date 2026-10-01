@@ -511,12 +511,19 @@ impl Chart {
     }
 
     /// Widen or narrow the window.
+    ///
+    /// Zooming is not panning: a chart that was following the newest candle goes
+    /// on following it, and one the user had stepped back into stays where it is.
+    /// Re-pinning is what keeps a following chart's window exact — the width it
+    /// was pinned to is not the width the new pitch draws.
     pub fn zoom(&mut self, factor: f64) {
         self.viewport.zoom(factor);
         self.settle_zoom(factor < 1.0);
 
-        let width = self.layout().candles;
-        self.follow = self.viewport.is_at_end(self.candles.len(), width);
+        if self.follow {
+            let width = self.layout().candles;
+            self.viewport.pin_to_end(self.candles.len(), width);
+        }
     }
 
     /// Step the request on until the pitch moves.
@@ -1248,6 +1255,8 @@ fn side_rank(side: PositionSide) -> u8 {
 mod tests {
     use crate::venue::{AccountSnapshot, Interval, Position, PositionSide, VenueId};
 
+    use crate::chart::Viewport;
+
     use super::{App, Chart, Feed, FeedStatus, Sort, SortColumn, Update};
 
     fn position(symbol: &str, pnl: f64, size: f64) -> Position {
@@ -1574,24 +1583,57 @@ mod tests {
     }
 
     #[test]
+    fn zooming_keeps_following_the_newest_candle() {
+        let mut app = app_with(Vec::new());
+        app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "AAAUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: candle_series(300),
+        });
+        app.chart.set_columns(195);
+
+        for factor in [0.8, 0.8, 1.25, 1.25] {
+            app.zoom_chart(factor);
+
+            assert!(app.chart.follow, "a zoom is not a pan: {factor}");
+            assert!(
+                app.chart.visible().last().map(|candle| candle.open_time_ms)
+                    == app.chart.candles.last().map(|candle| candle.open_time_ms),
+                "the newest candle stays on screen after zooming by {factor}"
+            );
+        }
+
+        // And stepping back into history still turns following off.
+        app.zoom_chart(1.25);
+        app.pan_chart(-(Viewport::PAN_STEP as isize));
+        assert!(!app.chart.follow);
+    }
+
+    /// A rising series, oldest first.
+    fn candle_series(count: i64) -> Vec<crate::venue::Kline> {
+        (0..count)
+            .map(|index| crate::venue::Kline {
+                open_time_ms: index * 900_000,
+                open: 100.0 + index as f64,
+                high: 101.0 + index as f64,
+                low: 99.0 + index as f64,
+                close: 100.0 + index as f64,
+                volume: 1.0,
+                close_time_ms: index * 900_000 + 899_999,
+                closed: true,
+            })
+            .collect()
+    }
+
+    #[test]
     fn every_zoom_press_changes_what_is_drawn() {
         let mut app = app_with(Vec::new());
         app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
         app.apply(Update::History {
             symbol: "AAAUSDT".to_owned(),
             interval: Interval::M15,
-            candles: (0..300)
-                .map(|index| crate::venue::Kline {
-                    open_time_ms: index * 900_000,
-                    open: 100.0 + index as f64,
-                    high: 101.0 + index as f64,
-                    low: 99.0 + index as f64,
-                    close: 100.0 + index as f64,
-                    volume: 1.0,
-                    close_time_ms: index * 900_000 + 899_999,
-                    closed: true,
-                })
-                .collect(),
+            candles: candle_series(300),
         });
         // A 195-column pane draws 195 candles at a pitch of one cell and 97 at
         // two: a zoom step landing between the two would draw exactly the same

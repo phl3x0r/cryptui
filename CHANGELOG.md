@@ -27,6 +27,13 @@ All notable changes to this project are documented here. The format follows
   cells or more, and a single dot otherwise — a dot grid cannot centre a wick on
   a one-cell bar, but a full-width wick there would be indistinguishable from the
   bar itself, which is worse than half a dot off centre.
+- Zooming no longer stops the chart following the live candle. A zoom press
+  recomputed "am I at the newest candle?" against the width the *new* pitch
+  draws, while the window was still pinned to the width the old one did, so the
+  answer came back no and the chart quietly left follow mode: the window froze and
+  the candle at its edge stopped moving with the price, until `f` was pressed. A
+  zoom is not a pan — a chart that was following keeps following (and re-pins its
+  window), and one stepped back into history stays there.
 - `+` magnifies the chart and `-` pulls back, the way the symbols read
   everywhere else. They were the other way round, so `+` showed more candles and
   `-` fewer.

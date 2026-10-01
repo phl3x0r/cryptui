@@ -714,6 +714,25 @@ mod tests {
     }
 
     #[test]
+    fn the_forming_candle_repaints_as_the_price_moves() {
+        // The report: "the latest candle does not redraw with price changes".
+        // The window had stopped following the live edge, so the candle at it was
+        // a closed one; with following intact the forming candle is the one drawn
+        // last, and it has to move as the price does.
+        let mut app = chart_app();
+        let before = candle_cells(&app);
+
+        let forming = app.chart.candles.last().copied().expect("a last candle");
+        let mut moved = forming;
+        moved.close = forming.close + 500.0;
+        moved.high = moved.close + 100.0;
+        app.chart.upsert(moved);
+        let after = candle_cells(&app);
+
+        assert_ne!(before, after, "the forming candle redraws when it moves");
+    }
+
+    #[test]
     fn a_wick_is_centred_on_its_bar() {
         for columns in [40u16, 95, 195, 240] {
             for requested in [20usize, 33, 50, 80, 120] {
