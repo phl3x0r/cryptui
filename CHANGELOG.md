@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Chart bars are all the same width. A Braille cell holds two dots and one
+  colour, and the candles were placed by fraction of a candle slot, so a bar came
+  out one or two dots wide depending on where its slot fell and two neighbours
+  could land in the same cell and erase each other — which read as bars merging
+  and gaps flickering as the chart scrolled. Bodies are now laid out on whole
+  cells, and the pane tells the viewport how many candles it can draw, so a
+  candle never shares a column with its neighbour. Bodies are filled rather than
+  outlined, which only showed at all once a body was several cells wide.
+
 ## [0.1.3] - 2026-10-01
 
 ### Added

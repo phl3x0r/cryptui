@@ -3,7 +3,9 @@
 //! This module deliberately has no dependency on the terminal widgets, so the
 //! ordering and selection rules can be tested without a terminal.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
+use std::ops::Range;
 
 use crate::auth::now_ms;
 use crate::chart::{MOVING_AVERAGE_WINDOWS, Viewport, moving_average};
@@ -321,6 +323,13 @@ pub struct Chart {
     /// Which overlays are drawn.
     pub(crate) overlays: Overlays,
     pub(crate) feed: FeedStatus,
+    /// Columns the price pane had in the last frame.
+    ///
+    /// Layout feedback rather than chart data: a Braille cell holds one colour,
+    /// so one candle per column is the most that can be drawn without two of
+    /// them erasing each other. Set by the renderer, which is the only thing
+    /// that knows how wide the pane is.
+    columns: Cell<usize>,
 }
 
 impl Chart {
@@ -335,7 +344,28 @@ impl Chart {
             follow: true,
             overlays: Overlays::default(),
             feed: FeedStatus::default(),
+            columns: Cell::new(Self::COLUMNS_UNKNOWN),
         }
+    }
+
+    /// How many candles could be drawn if nothing were known about the screen.
+    const COLUMNS_UNKNOWN: usize = usize::MAX;
+
+    /// Tell the chart how many columns the price pane has.
+    pub fn set_columns(&self, columns: u16) {
+        self.columns.set(usize::from(columns).max(1));
+    }
+
+    /// The candles on screen: the window the viewport asked for, narrowed to the
+    /// candles that fit one per column.
+    ///
+    /// Zooming out past the width of the pane cannot show more candles than
+    /// there are columns, so the window keeps its right-hand edge and gives up
+    /// its oldest candles instead of drawing several into the same cell.
+    fn visible_range(&self) -> Range<usize> {
+        let range = self.viewport.range(self.candles.len());
+        let drawable = range.len().min(self.columns.get());
+        (range.end - drawable)..range.end
     }
 
     /// Whether the chart is already pointed at `symbol` with `interval`.
@@ -403,12 +433,12 @@ impl Chart {
 
     /// The candles currently on screen.
     pub fn visible(&self) -> &[Kline] {
-        &self.candles[self.viewport.range(self.candles.len())]
+        &self.candles[self.visible_range()]
     }
 
     /// Moving-average values for the visible candles, aligned with [`Self::visible`].
     pub fn visible_average(&self, index: usize) -> &[Option<f64>] {
-        let range = self.viewport.range(self.candles.len());
+        let range = self.visible_range();
         self.averages
             .get(index)
             .map_or(&[][..], |values| &values[range])
