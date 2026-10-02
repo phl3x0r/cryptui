@@ -20,13 +20,13 @@ All notable changes to this project are documented here. The format follows
   no room for daylight and the bars touch, which is the one case no layout can
   avoid. Bodies are filled rather than outlined, which only showed at all once a
   body was several cells wide.
-- Wicks sit on the middle of their bar. They were drawn one dot in from the bar's
-  left edge whatever the bar's width, so a wide bar carried a wick near one side.
-  A wick is now as wide as the grid allows it to be centred, and no wider than it
-  must be to stay visible: a whole cell on the middle of an odd body of three
-  cells or more, and a single dot otherwise — a dot grid cannot centre a wick on
-  a one-cell bar, but a full-width wick there would be indistinguishable from the
-  bar itself, which is worse than half a dot off centre.
+- Wicks are one dot wide, at every zoom, and sit on their bar's middle. They were
+  drawn one dot in from the bar's left edge whatever the bar's width, so a wide
+  bar carried a wick near one side. Widening the wick to a whole cell fits the
+  middle of an odd body exactly, but it made the wick's width change from one
+  zoom level to the next, which reads as flicker. A single dot cannot be exactly
+  centred — a bar spans an even number of dots — so it goes on the dot just left
+  of the middle, half a dot out.
 - Zooming no longer stops the chart following the live candle. A zoom press
   recomputed "am I at the newest candle?" against the width the *new* pitch
   draws, while the window was still pinned to the width the old one did, so the

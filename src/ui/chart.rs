@@ -296,20 +296,16 @@ impl Slots {
         (left * self.dot, dots * self.dot)
     }
 
-    /// The wick of candle `index`: left edge and width, in canvas x units.
+    /// The wick of candle `index`: the dot it is drawn on, in canvas x units.
     ///
-    /// A wick is centred on its body, and as wide as the grid allows.
-    ///
-    /// A whole cell of wick lands exactly on the middle of an odd body, which is
-    /// the widest a wick can be and still be centred. A one-cell bar has no such
-    /// cell to spare: a wick its own width would be invisible, so it is a single
-    /// dot instead — half a dot off the middle, which is the closest a two-dot
-    /// bar can be marked.
-    fn wick_of(&self, index: usize) -> (f64, f64) {
-        let body = self.layout.body;
-        let dots = if body % 2 == 1 && body > 1 { 2.0 } else { 1.0 };
-        let left = 2.0 * f64::from(self.layout.cells(index).start) + f64::from(body) - 1.0;
-        (left * self.dot, (dots - 1.0) * self.dot)
+    /// Always one dot wide. A whole cell of wick fits exactly on the middle of an
+    /// odd body, but that made the wick's width change from one zoom level to the
+    /// next, which reads as flicker rather than as a candle. A body spans an even
+    /// number of dots whatever its width, so no wick can land exactly on the
+    /// middle; it goes on the dot just left of it, half a dot out.
+    fn wick(&self, index: usize) -> f64 {
+        let body = f64::from(self.layout.body);
+        (2.0 * f64::from(self.layout.cells(index).start) + body - 1.0) * self.dot
     }
 
     /// The candle's centre, in canvas x units.
@@ -324,8 +320,15 @@ fn draw_candles(context: &mut Context, candles: &[Kline], slots: &Slots, rows: R
     for (index, candle) in candles.iter().enumerate() {
         let color = candle_color(candle);
         let (x, width) = slots.body_of(index);
-        let (wick, wick_width) = slots.wick_of(index);
-        rows.fill(context, wick, wick_width, candle.low, candle.high, color);
+        // A fill of no width is a one-dot vertical line, which is a wick.
+        rows.fill(
+            context,
+            slots.wick(index),
+            0.0,
+            candle.low,
+            candle.high,
+            color,
+        );
 
         let (bottom, top) = (candle.open.min(candle.close), candle.open.max(candle.close));
         if top - bottom <= f64::EPSILON {
@@ -735,7 +738,7 @@ mod tests {
     #[test]
     fn a_wick_is_centred_on_its_bar() {
         for columns in [40u16, 95, 195, 240] {
-            for requested in [20usize, 33, 50, 80, 120] {
+            for requested in [8usize, 20, 33, 50, 80, 120] {
                 let layout = CandleLayout::fit(Some(columns), requested);
                 let slots = Slots::of(layout, columns, requested as f64);
 
@@ -743,29 +746,51 @@ mod tests {
                     let cells = layout.cells(index);
                     let left = 2.0 * f64::from(cells.start);
                     let right = 2.0 * f64::from(cells.end) - 1.0;
-                    let (wick, wick_width) = slots.wick_of(index);
-                    let wick_left = wick / slots.dot;
-                    let wick_right = (wick + wick_width) / slots.dot;
+                    let wick = slots.wick(index) / slots.dot;
 
-                    let slack = 1e-9; // dot positions are floats by the time they are drawn
                     assert!(
-                        wick_left >= left - slack && wick_right <= right + slack,
+                        wick >= left - 1e-9 && wick <= right + 1e-9,
                         "{layout:?}: the wick leaves its bar"
                     );
+                    // Dot positions are floats by the time they are drawn, and the
+                    // canvas rounds them, so half a dot is half a dot give or take.
                     let body_centre = (left + right) / 2.0;
-                    let wick_centre = (wick_left + wick_right) / 2.0;
                     assert!(
-                        (wick_centre - body_centre).abs() <= 0.5,
-                        "{layout:?}: wick centre {wick_centre} against body centre {body_centre}"
+                        (wick - body_centre).abs() <= 0.5 + 1e-9,
+                        "{layout:?}: wick at {wick} against body centre {body_centre}"
                     );
+                }
+            }
+        }
+    }
 
-                    if layout.body == 1 {
-                        let wick_dots = wick_right - wick_left + 1.0;
-                        assert!(
-                            wick_dots < 2.0,
-                            "{layout:?}: a one-cell bar's wick is as wide as the bar, so it                              cannot be told from it"
-                        );
-                    }
+    #[test]
+    fn every_wick_is_the_same_width() {
+        // One dot, at every zoom. A wick twice as wide fits an odd body exactly,
+        // but its width changed with the pitch, so the wicks flickered as the
+        // chart was zoomed.
+        for columns in [40u16, 95, 195, 240] {
+            for requested in [8usize, 20, 33, 50, 80, 120] {
+                let layout = CandleLayout::fit(Some(columns), requested);
+                let slots = Slots::of(layout, columns, requested as f64);
+
+                for index in 0..layout.candles.min(5) {
+                    let wick = slots.wick(index) / slots.dot;
+                    let body = layout.cells(index);
+                    let body_left = 2.0 * f64::from(body.start);
+                    let body_dots = 2.0 * f64::from(body.end - body.start);
+
+                    // A whole dot, never a fraction: it is drawn as a fill of no
+                    // width at a dot the canvas rounds to.
+                    assert!(
+                        (wick - wick.round()).abs() < 1e-9,
+                        "{layout:?}: a fraction of a dot of wick at {wick}"
+                    );
+                    assert!(wick >= body_left, "{layout:?}: the wick leaves its bar");
+                    assert!(
+                        wick < body_left + body_dots,
+                        "{layout:?}: the wick leaves its bar"
+                    );
                 }
             }
         }
