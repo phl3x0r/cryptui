@@ -37,13 +37,16 @@ All notable changes to this project are documented here. The format follows
 - `+` magnifies the chart and `-` pulls back, the way the symbols read
   everywhere else. They were the other way round, so `+` showed more candles and
   `-` fewer.
-- Every zoom press changes what is drawn. Candles are laid out on a pitch of
-  whole cells, so a pane 195 columns wide draws 195 candles at one cell each and
-  97 at two; a zoom step landing between the two drew exactly the same chart, so
-  the key appeared to do nothing until it crossed the next boundary. A press now
-  settles on the next pitch in its direction, and at the two ends of the zoom
-  range — where the pane cannot show more, or the pitch cannot grow — it says so
-  by leaving the chart alone.
+- Every zoom press changes what is drawn, by one pitch. Candles are laid out on a
+  pitch of whole cells, so a pane 195 columns wide draws 195 candles at a pitch
+  of one cell, 97 at two, 65 at three and so on: a step landing between two of
+  those drew exactly the same chart, so the key appeared to do nothing until it
+  crossed a boundary. Scaling the request by the key's factor instead crossed a
+  level or two depending on where the request sat, which made the bars widen
+  unevenly and left `+` then `-` somewhere other than where it began. A press now
+  moves exactly one pitch in its direction, and the sequence is reversible; at the
+  two ends — the pane full, or the pitch as deep as the zoom range allows — it
+  leaves the chart alone.
 
 ## [0.1.3] - 2026-10-01
 

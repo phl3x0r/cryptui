@@ -517,42 +517,46 @@ impl Chart {
     /// Re-pinning is what keeps a following chart's window exact — the width it
     /// was pinned to is not the width the new pitch draws.
     pub fn zoom(&mut self, factor: f64) {
-        self.viewport.zoom(factor);
-        self.settle_zoom(factor < 1.0);
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
 
+        // Nothing has said how wide the pane is — or it said something no pane
+        // could be — so the raw factor is all there is to go on.
+        let columns = usize::from(u16::try_from(self.columns.get()).unwrap_or(0));
+        if columns == 0 {
+            self.viewport.zoom(factor);
+            return;
+        }
+        let columns = columns as u16;
+
+        // One pitch per press, in the direction the factor points. Stepping the
+        // count by the factor instead crossed a level or two depending on where
+        // the request happened to sit, which made the bar width jump unevenly and
+        // left `+` followed by `-` somewhere other than where it started.
+        let current = self.layout().pitch;
+        let target = if factor < 1.0 {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1).max(1)
+        };
+
+        // The count that draws this pitch: one candle per column at that width,
+        // which sits in the middle of the band `round(columns / count) == pitch`.
+        let requested =
+            (u32::from(columns) / u32::from(target)).clamp(1, u32::from(u16::MAX)) as usize;
+        let requested = requested.clamp(Viewport::MIN_VISIBLE, Viewport::MAX_VISIBLE);
+
+        // Near the zoom limits the count that would draw this pitch is not
+        // available, and the press does nothing rather than snapping elsewhere.
+        if CandleLayout::fit(Some(columns), requested).pitch != target {
+            return;
+        }
+
+        self.viewport.set_visible(requested);
         if self.follow {
             let width = self.layout().candles;
             self.viewport.pin_to_end(self.candles.len(), width);
-        }
-    }
-
-    /// Step the request on until the pitch moves.
-    ///
-    /// The paper cannot draw any count it is asked for: candles are laid out on a
-    /// pitch of whole cells, so a pane 195 columns wide draws 195 candles at one
-    /// cell each and 97 at two, and a zoom step landing between the two would
-    /// draw exactly the same chart. Each press therefore lands on the next pitch
-    /// in its direction — unless the pane has not said how wide it is, or the
-    /// zoom is already at its limit.
-    fn settle_zoom(&mut self, zooming_in: bool) {
-        if self.columns.get() == 0 {
-            return;
-        }
-        let pitch = self.layout().pitch;
-        let limit = if zooming_in {
-            Viewport::MIN_VISIBLE
-        } else {
-            Viewport::MAX_VISIBLE
-        };
-
-        let mut visible = self.viewport.visible();
-        while self.layout().pitch == pitch && visible != limit {
-            visible = if zooming_in {
-                visible.saturating_sub(1)
-            } else {
-                visible + 1
-            };
-            self.viewport.set_visible(visible);
         }
     }
 
@@ -1580,6 +1584,48 @@ mod tests {
         app.set_chart_symbol("ZZZUSDT".to_owned());
         app.chart.reset("ZZZUSDT".to_owned(), Interval::M15);
         assert!(app.chart_position().is_none());
+    }
+
+    #[test]
+    fn zooming_steps_one_pitch_at_a_time_and_comes_back() {
+        let mut app = app_with(Vec::new());
+        app.chart.reset("AAAUSDT".to_owned(), Interval::M15);
+        app.apply(Update::History {
+            symbol: "AAAUSDT".to_owned(),
+            interval: Interval::M15,
+            candles: candle_series(300),
+        });
+        app.chart.set_columns(195);
+
+        let start = (app.chart.layout().pitch, app.chart.visible().len());
+        let mut steps = 0;
+        let mut last = start.0;
+
+        for _ in 0..16 {
+            app.zoom_chart(0.8);
+            let pitch = app.chart.layout().pitch;
+
+            assert!(
+                pitch == last || pitch == last + 1,
+                "one pitch per press, not {last} to {pitch}: {:?}",
+                app.chart.layout()
+            );
+            if pitch == last {
+                break; // the deepest zoom: there is nothing narrower to draw
+            }
+            last = pitch;
+            steps += 1;
+        }
+        assert!(steps >= 5, "zooming in has levels to step through: {steps}");
+
+        for _ in 0..steps {
+            app.zoom_chart(1.25);
+        }
+        assert_eq!(
+            (app.chart.layout().pitch, app.chart.visible().len()),
+            start,
+            "stepping back out returns exactly where it started"
+        );
     }
 
     #[test]
